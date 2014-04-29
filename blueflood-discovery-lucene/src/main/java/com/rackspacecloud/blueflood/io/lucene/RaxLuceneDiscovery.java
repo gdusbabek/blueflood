@@ -9,7 +9,11 @@ import org.apache.lucene.document.TextField;
 import java.io.File;
 
 public class RaxLuceneDiscovery extends LuceneDiscovery {
-    
+
+    public RaxLuceneDiscovery() {
+        super();
+    }
+
     public RaxLuceneDiscovery(File indexDir) {
         super(indexDir);
     }

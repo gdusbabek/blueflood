@@ -47,6 +47,11 @@ public class LuceneDiscovery implements DiscoveryIO {
     private ReadWriteLock flushLock = new ReentrantReadWriteLock(true);
     private Map<Locator, Metric> unflushed = new HashMap<Locator, Metric>();
     
+    // no-arg constructor required by DiscoveryWriter
+    public LuceneDiscovery() {
+        this(new File(System.getProperty("bf.luceneDir")));
+    }
+    
     public LuceneDiscovery(File indexDir) {
         this.indexDir = indexDir;
     }
