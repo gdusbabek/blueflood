@@ -18,6 +18,7 @@ package com.rackspacecloud.blueflood.io;
 
 import com.rackspacecloud.blueflood.service.ElasticClientManager;
 import com.rackspacecloud.blueflood.service.RemoteElasticSearchServer;
+import com.rackspacecloud.blueflood.types.IMetric;
 import com.rackspacecloud.blueflood.types.Locator;
 import com.rackspacecloud.blueflood.types.Metric;
 import com.rackspacecloud.blueflood.utils.Metrics;
@@ -87,17 +88,19 @@ public class ElasticIO implements DiscoveryIO {
         return result;
     }
 
-    public void insertDiscovery(List<Metric> batch) throws IOException {
+    public void insertDiscovery(List<? extends IMetric> batch) throws IOException {
         // TODO: check bulk insert result and retry
         BulkRequestBuilder bulk = client.prepareBulk();
-        for (Metric metric : batch) {
+        for (IMetric metric : batch) {
             Locator locator = metric.getLocator();
             Discovery md = new Discovery(locator.getTenantId(), locator.getMetricName());
             Map<String, Object> info = new HashMap<String, Object>();
-            if (metric.getUnit() != null) { // metric units may be null
-                info.put(UNIT.toString(), metric.getUnit());
+            if (metric instanceof Metric) {
+                if (((Metric) metric).getUnit() != null) { // metric units may be null
+                    info.put(UNIT.toString(), ((Metric) metric).getUnit());
+                }
+                info.put(TYPE.toString(), ((Metric) metric).getDataType());
             }
-            info.put(TYPE.toString(), metric.getDataType());
             md.withAnnotation(info);
             bulk.add(createSingleRequest(md));
         }

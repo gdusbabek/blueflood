@@ -3,7 +3,7 @@ package com.rackspacecloud.blueflood.inputs.processors;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.rackspacecloud.blueflood.concurrent.ThreadPoolBuilder;
 import com.rackspacecloud.blueflood.io.DiscoveryIO;
-import com.rackspacecloud.blueflood.types.Metric;
+import com.rackspacecloud.blueflood.types.IMetric;
 
 import org.junit.Test;
 import static org.mockito.Mockito.*;
@@ -30,7 +30,7 @@ public class DiscoveryWriterTest {
         discWriter.registerIO(discovererB);
 
         // create fake metrics to test
-        List<List<Metric>> testdata = new ArrayList<List<Metric>>();
+        List<List<? extends IMetric>> testdata = new ArrayList<List<? extends IMetric>>();
         testdata.add(mock(List.class));
         testdata.add(mock(List.class));
         testdata.add(mock(List.class));
@@ -44,7 +44,7 @@ public class DiscoveryWriterTest {
 
         // verify the insertDiscovery method on all implementors of
         // DiscoveryIO has been called on all metrics
-        for (List<Metric> metrics : testdata) {
+        for (List<? extends IMetric> metrics : testdata) {
             verify(discovererA).insertDiscovery(metrics);
             verify(discovererB).insertDiscovery(metrics);
         }

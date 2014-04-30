@@ -25,6 +25,7 @@ import com.rackspacecloud.blueflood.concurrent.NoOpFuture;
 import com.rackspacecloud.blueflood.io.DiscoveryIO;
 import com.rackspacecloud.blueflood.service.Configuration;
 import com.rackspacecloud.blueflood.service.CoreConfig;
+import com.rackspacecloud.blueflood.types.IMetric;
 import com.rackspacecloud.blueflood.types.Metric;
 import com.rackspacecloud.blueflood.utils.Metrics;
 import org.slf4j.Logger;
@@ -37,7 +38,7 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ThreadPoolExecutor;
 
-public class DiscoveryWriter extends AsyncFunctionWithThreadPool<List<List<Metric>>, List<List<Metric>>> {
+public class DiscoveryWriter extends AsyncFunctionWithThreadPool<List<List<? extends IMetric>>, List<List<? extends IMetric>>> {
 
     private final List<DiscoveryIO> discoveryIOs = new ArrayList<DiscoveryIO>();
     private final Map<Class<? extends DiscoveryIO>, Timer> writeDurationTimers = new HashMap<Class<? extends DiscoveryIO>, Timer>();
@@ -84,9 +85,9 @@ public class DiscoveryWriter extends AsyncFunctionWithThreadPool<List<List<Metri
         }
     }
 
-    public ListenableFuture<List<Boolean>> processMetrics(List<List<Metric>> input) {
+    public ListenableFuture<List<Boolean>> processMetrics(List<List<? extends IMetric>> input) {
         final List<ListenableFuture<Boolean>> resultFutures = new ArrayList<ListenableFuture<Boolean>>();
-        for (final List<Metric> metrics : input) {
+        for (final List<? extends IMetric> metrics : input) {
             ListenableFuture<Boolean> futureBatchResult = getThreadPool().submit(new Callable<Boolean>() {
                 public Boolean call() throws Exception {
                     boolean success = true;
@@ -110,10 +111,10 @@ public class DiscoveryWriter extends AsyncFunctionWithThreadPool<List<List<Metri
         return Futures.allAsList(resultFutures);
     }
 
-    public ListenableFuture<List<List<Metric>>> apply(List<List<Metric>> input) {
+    public ListenableFuture<List<List<? extends IMetric>>> apply(List<List<? extends IMetric>> input) {
         processMetrics(input);
         // we don't need all metrics to finish being inserted into the discovery backend
         // before moving onto the next step in the processing chain.
-        return new NoOpFuture<List<List<Metric>>>(input);
+        return new NoOpFuture<List<List<? extends IMetric>>>(input);
     }
 }

@@ -1,6 +1,6 @@
 package com.rackspacecloud.blueflood.io.lucene;
 
-import com.rackspacecloud.blueflood.types.Metric;
+import com.rackspacecloud.blueflood.types.IMetric;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.NumericDocValuesField;
@@ -19,7 +19,7 @@ public class RaxLuceneDiscovery extends LuceneDiscovery {
     }
 
     @Override
-    public void amendDocument(Document doc, Metric metric) {
+    public void amendDocument(Document doc, IMetric metric) {
         super.amendDocument(doc, metric);
         MetricInfo info = new MetricInfo(metric.getLocator().toString());
         doc.add(new Field("check", info.getCheck(), TextField.TYPE_NOT_STORED));

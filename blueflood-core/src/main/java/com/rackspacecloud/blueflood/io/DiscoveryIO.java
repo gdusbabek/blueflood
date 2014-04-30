@@ -2,8 +2,8 @@ package com.rackspacecloud.blueflood.io;
 
 import java.util.List;
 
-import com.rackspacecloud.blueflood.types.Metric;
+import com.rackspacecloud.blueflood.types.IMetric;
 
 public interface DiscoveryIO {
-    public void insertDiscovery(List<Metric> metrics) throws Exception;
+    public void insertDiscovery(List<? extends IMetric> metrics) throws Exception;
 }

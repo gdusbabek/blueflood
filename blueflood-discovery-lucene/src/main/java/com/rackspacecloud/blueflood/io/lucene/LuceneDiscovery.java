@@ -2,6 +2,7 @@ package com.rackspacecloud.blueflood.io.lucene;
 
 import com.google.common.base.Ticker;
 import com.rackspacecloud.blueflood.io.DiscoveryIO;
+import com.rackspacecloud.blueflood.types.IMetric;
 import com.rackspacecloud.blueflood.types.Locator;
 import com.rackspacecloud.blueflood.types.Metric;
 import org.apache.lucene.analysis.Analyzer;
@@ -45,7 +46,7 @@ public class LuceneDiscovery implements DiscoveryIO {
     private long flushAtNanos= 300 * 1000000000; // 5 minutes.
     
     private ReadWriteLock flushLock = new ReentrantReadWriteLock(true);
-    private Map<Locator, Metric> unflushed = new HashMap<Locator, Metric>();
+    private Map<Locator, IMetric> unflushed = new HashMap<Locator, IMetric>();
     
     // no-arg constructor required by DiscoveryWriter
     public LuceneDiscovery() {
@@ -57,10 +58,10 @@ public class LuceneDiscovery implements DiscoveryIO {
     }
     
     @Override
-    public void insertDiscovery(List<Metric> metrics) throws Exception {
+    public void insertDiscovery(List<? extends IMetric> metrics) throws Exception {
         flushLock.readLock().lock();
         try {
-            for (Metric m : metrics) {
+            for (IMetric m : metrics) {
                 unflushed.put(m.getLocator(), m);
             }
         } finally {
@@ -70,7 +71,7 @@ public class LuceneDiscovery implements DiscoveryIO {
     }
     
     public void flush() throws IOException {
-        Map<Locator, Metric> flushMap = new HashMap<Locator, Metric>();
+        Map<Locator, IMetric> flushMap = new HashMap<Locator, IMetric>();
         flushLock.writeLock().lock();
         try {
             flushMap.putAll(unflushed);
@@ -85,16 +86,20 @@ public class LuceneDiscovery implements DiscoveryIO {
             return;
         
         Map<String, Document> documents = new HashMap<String, Document>();
-        for (Metric metric : flushMap.values()) {
+        for (IMetric metric : flushMap.values()) {
             Document doc = new Document();
             String locatorString = makeLuceneKey(metric.getLocator());
             String indexKey = Integer.toHexString(locatorString.hashCode());
             doc.add(new Field(PRIMARY_KEY_FIELD, indexKey, TextField.TYPE_NOT_STORED));
             doc.add(new Field("locator", locatorString, TextField.TYPE_STORED));
             doc.add(new Field("tenant", metric.getLocator().getTenantId(), TextField.TYPE_NOT_STORED));
-            doc.add(new Field("datatype", metric.getDataType() == null ? "unknown" : metric.getDataType().toString(), TextField.TYPE_NOT_STORED));
-            doc.add(new Field("unit", metric.getUnit() == null ? "unknown" : metric.getUnit(), TextField.TYPE_NOT_STORED));
             doc.add(new Field("rolluptype", metric.getRollupType().name(), TextField.TYPE_NOT_STORED));
+            if (metric instanceof Metric) {
+                String dataType = ((Metric) metric).getDataType() == null ? "unknown" : ((Metric) metric).getDataType().toString();
+                String unit = ((Metric) metric).getUnit() == null ? "unknown" : ((Metric) metric).getUnit();
+                doc.add(new Field("datatype", dataType, TextField.TYPE_NOT_STORED));
+                doc.add(new Field("unit", unit, TextField.TYPE_NOT_STORED));
+            }
             amendDocument(doc, metric);
             
             documents.put(indexKey, doc);
@@ -135,7 +140,7 @@ public class LuceneDiscovery implements DiscoveryIO {
     }
     
     // overwrite in child class.
-    public void amendDocument(Document doc, Metric metric) {}
+    public void amendDocument(Document doc, IMetric metric) {}
     
     private void maybeFlush() throws IOException {
         if (unflushed.size() > flushAtSize || ticker.read() - lastFlush > flushAtNanos)
