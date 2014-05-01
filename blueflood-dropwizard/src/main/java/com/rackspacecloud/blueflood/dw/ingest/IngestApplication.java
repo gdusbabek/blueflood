@@ -2,6 +2,8 @@ package com.rackspacecloud.blueflood.dw.ingest;
 
 import com.google.common.base.Joiner;
 import com.rackspacecloud.blueflood.cache.MetadataCache;
+import com.rackspacecloud.blueflood.concurrent.ThreadPoolBuilder;
+import com.rackspacecloud.blueflood.dw.CommonConfiguration;
 import com.rackspacecloud.blueflood.dw.NotDOAHealthCheck;
 import com.rackspacecloud.blueflood.dw.StateManager;
 import com.rackspacecloud.blueflood.dw.logging.LogAppenderFactory;
@@ -9,12 +11,14 @@ import com.rackspacecloud.blueflood.io.IMetricsWriter;
 import com.rackspacecloud.blueflood.service.Configuration;
 import com.rackspacecloud.blueflood.service.CoreConfig;
 import com.rackspacecloud.blueflood.service.ScheduleContext;
+import com.rackspacecloud.blueflood.types.IMetric;
 import com.rackspacecloud.blueflood.utils.Util;
 import io.dropwizard.Application;
 import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
 
 import java.io.IOException;
+import java.util.Collection;
 
 
 public class IngestApplication extends Application<IngestConfiguration> {
@@ -52,7 +56,7 @@ public class IngestApplication extends Application<IngestConfiguration> {
     }
     
     // resets the traditional BF configuation object with values from the YAML configuration.
-    public static void overrideBluefloodConfiguration(IngestConfiguration ingestConfiguration) throws IOException {
+    public static void overrideBluefloodConfiguration(CommonConfiguration ingestConfiguration) throws IOException {
         // a little bit of backwards compatibility. Take values out of the configuration for this webapp and force them
         // into the traditional blueflood configuration.
         System.setProperty(CoreConfig.CASSANDRA_HOSTS.name(), Joiner.on(",").join(ingestConfiguration.getCassandraHosts()));
@@ -83,6 +87,10 @@ public class IngestApplication extends Application<IngestConfiguration> {
             System.setProperty(CoreConfig.GRAPHITE_HOST.name(), ingestConfiguration.getGraphite().getPrefix());
         }
         
+        // set up local lucene logging.
+        System.setProperty("bf.luceneDir", ingestConfiguration.getLuceneDirectory());
+        System.setProperty(CoreConfig.DISCOVERY_MODULES.name(), "com.rackspacecloud.blueflood.io.lucene.LuceneDiscovery");
+        
         Configuration.getInstance().init();
     }
 
@@ -103,7 +111,15 @@ public class IngestApplication extends Application<IngestConfiguration> {
         
         // state management for active shards, slots, etc.
         StateManager stateManager = new StateManager(rollupContext);
+        final DiscoveryManager discoveryManager = new DiscoveryManager(new ThreadPoolBuilder()
+            .withCorePoolSize(5)
+            .withMaxPoolSize(5)
+            .withUnboundedQueue()
+            .withName("discovery-indexing")
+            .build());
+        
         environment.lifecycle().manage(stateManager);
+        environment.lifecycle().manage(discoveryManager);
         
         MetadataCache cache = MetadataCache.getInstance();
         
@@ -113,12 +129,14 @@ public class IngestApplication extends Application<IngestConfiguration> {
                 ingestConfiguration,
                 rollupContext,
                 writer,
-                cache);
+                cache,
+                discoveryManager);
         final MultiTenantIngestResource mtIngestResource = new MultiTenantIngestResource(
                 ingestConfiguration,
                 rollupContext,
                 writer,
-                cache);
+                cache,
+                discoveryManager);
         
         // register resources.
         environment.healthChecks().register("not-doa", notDOA);

@@ -36,8 +36,8 @@ public class MultiTenantIngestResource extends AbstractIngestResource {
     private final Meter err4xxMeter = Metrics.meter(MultiTenantIngestResource.class, "4xx Errors");
     private final Meter err5xxMeter = Metrics.meter(MultiTenantIngestResource.class, "5xx Errors");
 
-    public MultiTenantIngestResource(IngestConfiguration configuration, ScheduleContext context, IMetricsWriter writer, MetadataCache cache) {
-        super(configuration, context, writer, cache);
+    public MultiTenantIngestResource(IngestConfiguration configuration, ScheduleContext context, IMetricsWriter writer, MetadataCache cache, DiscoveryManager discovery) {
+        super(configuration, context, writer, cache, discovery);
     }
 
     @POST
@@ -64,6 +64,7 @@ public class MultiTenantIngestResource extends AbstractIngestResource {
             preProcess(newMetrics);
             insertFullMetrics(newMetrics);
             updateContext(newMetrics);
+            insertDiscovery(newMetrics);
             postProcess(newMetrics);
         } catch (IOException ex) {
             err5xxMeter.mark();
@@ -126,6 +127,7 @@ public class MultiTenantIngestResource extends AbstractIngestResource {
             preProcess(newMetrics);
             insertPreaggreatedMetrics(newMetrics);
             updateContext(newMetrics);
+            insertDiscovery(newMetrics);
             postProcess(newMetrics);
         } catch (IOException ex) {
             err5xxMeter.mark();

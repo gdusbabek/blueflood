@@ -2,6 +2,7 @@ package com.rackspacecloud.blueflood.dw.query;
 
 import com.rackspacecloud.blueflood.dw.NotDOAHealthCheck;
 import com.rackspacecloud.blueflood.dw.StateManager;
+import com.rackspacecloud.blueflood.dw.ingest.IngestApplication;
 import com.rackspacecloud.blueflood.service.ScheduleContext;
 import com.rackspacecloud.blueflood.utils.Util;
 import io.dropwizard.Application;
@@ -27,6 +28,11 @@ public class QueryApplication extends Application<QueryConfiguration> {
     public void run(QueryConfiguration configuration, Environment environment) throws Exception {
         final ScheduleContext rollupContext = new ScheduleContext(System.currentTimeMillis(), Util.parseShards("NONE"));
         
+        // should we inject the Dropwizard config into Blueflood? 
+        if (configuration.isPopulateBluefloodConfigurationSettings()) {
+            IngestApplication.overrideBluefloodConfiguration(configuration);
+        }
+        
         // shard state management.
         StateManager stateManager = new StateManager(rollupContext);
         environment.lifecycle().manage(stateManager);
@@ -38,10 +44,12 @@ public class QueryApplication extends Application<QueryConfiguration> {
         
         final NotDOAHealthCheck notDOA = new NotDOAHealthCheck();
         final QueryResource queryResource = new QueryResource();
+        final LuceneResource luceneResource = new LuceneResource();
         
         // register
         environment.healthChecks().register("not-doa", notDOA);
         environment.jersey().register(queryResource);
+        environment.jersey().register(luceneResource);
         
     }
 }

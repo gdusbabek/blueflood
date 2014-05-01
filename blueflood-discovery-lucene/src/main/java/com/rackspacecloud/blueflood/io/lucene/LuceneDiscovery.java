@@ -11,12 +11,15 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -24,7 +27,9 @@ import org.apache.lucene.util.Version;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +48,7 @@ public class LuceneDiscovery implements DiscoveryIO {
     private long lastFlush = ticker.read();
     
     private int flushAtSize = 50000;
-    private long flushAtNanos= 300 * 1000000000; // 5 minutes.
+    private long flushAtNanos= 300L * 1000000000L; // 5 minutes.
     
     private ReadWriteLock flushLock = new ReentrantReadWriteLock(true);
     private Map<Locator, IMetric> unflushed = new HashMap<Locator, IMetric>();
@@ -79,8 +84,6 @@ public class LuceneDiscovery implements DiscoveryIO {
         } finally {
             flushLock.writeLock().unlock();
         }
-        
-        flushAtNanos = ticker.read();
         
         if (flushMap.size() == 0)
             return;
@@ -118,6 +121,20 @@ public class LuceneDiscovery implements DiscoveryIO {
         
     }
     
+    public Collection<String> getAllLocators() throws Exception {
+        IndexSearcher searcher = new IndexSearcher(DirectoryReader.open(FSDirectory.open(indexDir)));
+        Query query = new MatchAllDocsQuery();
+        TopDocs docs = searcher.search(query, Integer.MAX_VALUE);
+        IndexReader reader = searcher.getIndexReader();
+        ArrayList<String> locators = new ArrayList<String>();
+        for (ScoreDoc scoreDoc : docs.scoreDocs) {
+            Document doc = reader.document(scoreDoc.doc);
+            locators.add(doc.get("locator"));
+        }
+        Collections.sort(locators);
+        return locators;
+    }
+    
     private static void deleteDocuments(Collection<String> indexKeys, IndexWriter writer) throws IOException {
         IndexSearcher searcher = new IndexSearcher(DirectoryReader.open(writer, false));
         QueryParser parser = new QueryParser(Version.LUCENE_46, PRIMARY_KEY_FIELD, writer.getAnalyzer());
@@ -143,8 +160,10 @@ public class LuceneDiscovery implements DiscoveryIO {
     public void amendDocument(Document doc, IMetric metric) {}
     
     private void maybeFlush() throws IOException {
-        if (unflushed.size() > flushAtSize || ticker.read() - lastFlush > flushAtNanos)
+        if (unflushed.size() > flushAtSize || ticker.read() - lastFlush > flushAtNanos) {
             flush();
+            lastFlush = ticker.read();
+        }
     }
     
     // swap out characters lucene doesn't like.

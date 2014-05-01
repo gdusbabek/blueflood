@@ -31,8 +31,8 @@ public class BasicIngestResource extends AbstractIngestResource {
     
     private final Meter err5xxMeter = Metrics.meter(BasicIngestResource.class, "5xx Errors");
     
-    public BasicIngestResource(IngestConfiguration configuration, ScheduleContext context, IMetricsWriter writer, MetadataCache cache) {
-        super(configuration, context, writer, cache);
+    public BasicIngestResource(IngestConfiguration configuration, ScheduleContext context, IMetricsWriter writer, MetadataCache cache, DiscoveryManager discovery) {
+        super(configuration, context, writer, cache, discovery);
     }
     
     @POST
@@ -47,6 +47,7 @@ public class BasicIngestResource extends AbstractIngestResource {
             preProcess(newMetrics);
             insertFullMetrics(newMetrics);
             updateContext(newMetrics);
+            insertDiscovery(newMetrics);
             postProcess(newMetrics);
         } catch (IOException ex) {
             err5xxMeter.mark();
@@ -68,6 +69,7 @@ public class BasicIngestResource extends AbstractIngestResource {
             preProcess(newMetrics);
             insertPreaggreatedMetrics(newMetrics);
             updateContext(newMetrics);
+            insertDiscovery(newMetrics);
             postProcess(newMetrics);
         } catch (IOException ex) {
             err5xxMeter.mark();

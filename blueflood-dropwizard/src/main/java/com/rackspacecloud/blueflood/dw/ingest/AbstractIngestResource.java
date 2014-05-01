@@ -26,12 +26,14 @@ public abstract class AbstractIngestResource /*implements IMetricsWriter*/ {
     private final ScheduleContext context;
     private final IngestConfiguration configuration;
     private final MetadataCache cache;
+    private final DiscoveryManager discovery;
     
-    public AbstractIngestResource(IngestConfiguration configuration, ScheduleContext context, IMetricsWriter writer, MetadataCache cache) {
+    public AbstractIngestResource(IngestConfiguration configuration, ScheduleContext context, IMetricsWriter writer, MetadataCache cache, DiscoveryManager discovery) {
         this.writer = writer;
         this.configuration = configuration;
         this.context = context;
         this.cache = cache;
+        this.discovery = discovery;
     }
     
     protected void maybeForceCollectionTimes(long when, Collection<? extends ICollectionTime> metrics) {
@@ -88,6 +90,12 @@ public abstract class AbstractIngestResource /*implements IMetricsWriter*/ {
                 // that a metric will not be ingested.
                 log.warn(th.getMessage(), th);
             }
+        }
+    }
+    
+    protected final void insertDiscovery(Collection<? extends IMetric> metrics) {
+        if (discovery != null) {
+            discovery.insertDiscoveryAsync(metrics);
         }
     }
     
