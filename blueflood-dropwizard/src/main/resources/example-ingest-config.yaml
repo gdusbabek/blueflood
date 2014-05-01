@@ -1,19 +1,20 @@
 server:
   applicationConnectors:
     - type: http
-      bindHost: 127.0.0.1
+      bindHost: 0.0.0.0
       port: 19000
   adminConnectors:
     - type: http
       bindHost: 127.0.0.1
       port: 19010
-populateBluefloodConfigurationSettings: false
+populateBluefloodConfigurationSettings: true
 cassandraHosts:
  - 127.0.0.1:19180
  - 127.0.0.1:19180
 rollupKeyspace: data
 metricsWriterClass: "com.rackspacecloud.blueflood.io.AstyanaxMetricsWriter"
 forceNewCollectionTime: true
+luceneDirectory: "/Users/gdusbabek/Desktop/lucene-test-index"
 riemann:
   enabled: false
   host: 127.0.0.1
@@ -30,24 +31,24 @@ graphite:
 logging:
   level: INFO
   appenders:
-    - type: rax-airbrake
-      enabled: false
-      env: gdusbabek
-      apiKey: YOUR_API_KEY_GOES_HERE
-    - type: rax-logstash-zmq
-      enabled: false
-      socketType: PUSHPULL
-      endpoints: tcp://127.0.0.1:2120
-      bindConnect: CONNECT
-      linger: 1000
-      sendHWM: 1000
-      customFields: "{\"host\":\"gdusbabek.local\",\"type\":\"dev\",\"instance\":0}"
+#    - type: rax-airbrake
+#      enabled: false
+#      env: gdusbabek
+#      apiKey: YOUR_API_KEY_GOES_HERE
+#    - type: rax-logstash-zmq
+#      enabled: false
+#      socketType: PUSHPULL
+#      endpoints: tcp://127.0.0.1:2120
+#      bindConnect: CONNECT
+#      linger: 1000
+#      sendHWM: 1000
+#      customFields: "{\"host\":\"gdusbabek.local\",\"type\":\"dev\",\"instance\":0}"
     - type: console
       threshold: DEBUG
       target: stdout
-    - type: file
-      threshold: DEBUG
-      currentLogFilename: /tmp/dw_log.txt
-      archivedLogFilenamePattern: /tmp/dw_log-%d.log.gz
-      archivedFileCount: 1
-      timeZone: UTC
+#    - type: file
+#      threshold: DEBUG
+#      currentLogFilename: /tmp/dw_log.txt
+#      archivedLogFilenamePattern: /tmp/dw_log-%d.log.gz
+#      archivedFileCount: 1
+#      timeZone: UTC
