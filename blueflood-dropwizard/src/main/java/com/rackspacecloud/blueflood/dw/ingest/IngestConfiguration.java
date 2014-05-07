@@ -29,6 +29,9 @@ public class IngestConfiguration extends Configuration {
     @NotEmpty 
     private String metricsWriterClass = "com.rackspacecloud.blueflood.io.AstyanaxMetricsWriter";
     
+    @NotEmpty
+    private String shardStateIOClass = "com.rackspacecloud.blueflood.io.AstyanaxShardStateIO";
+    
     // debug setting where the API endpoint ignore collection times passed in.
     private boolean forceNewCollectionTime = false;
     
@@ -60,6 +63,12 @@ public class IngestConfiguration extends Configuration {
 
     @JsonProperty
     public void setMetricsWriterClass(String metricsWriterClass) { this.metricsWriterClass = metricsWriterClass; }
+
+    @JsonProperty
+    public String getShardStateIOClass() { return shardStateIOClass; }
+
+    @JsonProperty
+    public void setShardStateIOClass(String shardStateIOClass) { this.shardStateIOClass = shardStateIOClass; }
 
     @JsonProperty
     public int getCassandraRequestTimeout() { return cassandraRequestTimeout; }

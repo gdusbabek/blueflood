@@ -89,6 +89,7 @@ public class IngestApplication extends Application<IngestConfiguration> {
 
     @Override
     public void run(IngestConfiguration ingestConfiguration, Environment environment) throws Exception {
+        ClassLoader loader = IMetricsWriter.class.getClassLoader();
         
         // should we inject the Dropwizard config into Blueflood? 
         if (ingestConfiguration.isPopulateBluefloodConfigurationSettings()) {
@@ -98,14 +99,14 @@ public class IngestApplication extends Application<IngestConfiguration> {
         final ScheduleContext rollupContext = new ScheduleContext(System.currentTimeMillis(), Util.parseShards("NONE"));
         
         // construct the ingestion writer.
-        ClassLoader loader = IMetricsWriter.class.getClassLoader();
+        
         Class writerImpl = loader.loadClass(ingestConfiguration.getMetricsWriterClass());
         IMetricsWriter writer = (IMetricsWriter) writerImpl.newInstance();
         
-        
         // state management for active shards, slots, etc.
-        ShardStateIO shardstateIO = new AstyanaxShardStateIO(); // todo: use configuration setting.
-        StateManager stateManager = new StateManager(rollupContext, shardstateIO);
+        Class shardStateImpl = loader.loadClass(ingestConfiguration.getShardStateIOClass());
+        ShardStateIO shardStateIO = (ShardStateIO) shardStateImpl.newInstance();
+        StateManager stateManager = new StateManager(rollupContext, shardStateIO);
         environment.lifecycle().manage(stateManager);
         
         MetadataCache cache = MetadataCache.getInstance();
