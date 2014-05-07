@@ -6,6 +6,7 @@ import com.rackspacecloud.blueflood.dw.logging.LogAppenderFactory;
 import com.rackspacecloud.blueflood.io.AstyanaxIO;
 import com.rackspacecloud.blueflood.io.AstyanaxShardStateIO;
 import com.rackspacecloud.blueflood.io.IMetricsWriter;
+import com.rackspacecloud.blueflood.io.MetadataIO;
 import com.rackspacecloud.blueflood.io.ShardStateIO;
 import com.rackspacecloud.blueflood.service.Configuration;
 import com.rackspacecloud.blueflood.service.CoreConfig;
@@ -110,6 +111,10 @@ public class IngestApplication extends Application<IngestConfiguration> {
         environment.lifecycle().manage(stateManager);
         
         MetadataCache cache = MetadataCache.getInstance();
+        
+        Class metadataIOImpl = loader.loadClass(ingestConfiguration.getMetadataIOClass());
+        MetadataIO metadataIO = (MetadataIO) metadataIOImpl.newInstance();
+        cache.setIO(metadataIO);
         
         // create resources.
         final NotDOAHealthCheck notDOA = new NotDOAHealthCheck();

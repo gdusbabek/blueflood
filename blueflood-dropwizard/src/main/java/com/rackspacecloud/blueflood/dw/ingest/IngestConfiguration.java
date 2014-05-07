@@ -32,6 +32,9 @@ public class IngestConfiguration extends Configuration {
     @NotEmpty
     private String shardStateIOClass = "com.rackspacecloud.blueflood.io.AstyanaxShardStateIO";
     
+    @NotEmpty
+    private String metadataIOClass = "com.rackspacecloud.blueflood.io.AstyanaxMetadataIO";
+    
     // debug setting where the API endpoint ignore collection times passed in.
     private boolean forceNewCollectionTime = false;
     
@@ -69,6 +72,12 @@ public class IngestConfiguration extends Configuration {
 
     @JsonProperty
     public void setShardStateIOClass(String shardStateIOClass) { this.shardStateIOClass = shardStateIOClass; }
+
+    @JsonProperty
+    public String getMetadataIOClass() { return metadataIOClass; }
+
+    @JsonProperty
+    public void setMetadataIOClass(String metadataIOClass) { this.metadataIOClass = metadataIOClass; }
 
     @JsonProperty
     public int getCassandraRequestTimeout() { return cassandraRequestTimeout; }
