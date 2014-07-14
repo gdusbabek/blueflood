@@ -91,6 +91,7 @@ public class Migration2 {
     private static final String CONCURRENCY = "concurrency";
     private static final String RESUME = "resume";
     private static final String VERIFY = "verify";
+    private static final String VERBOSE = "verbose";
     
     static {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
@@ -116,6 +117,7 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Number of read/write threads to use (default=1)").create(CONCURRENCY));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Locator to resume processing at.").create(RESUME));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Percentage of copies to verify by reading (0..1) (default=0.005)").create(VERIFY));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Include all output (default=true)").create(VERBOSE));
         
         // todo: we need to move out the other features from Migration.java. Namely:
         // 5. verification.
@@ -133,6 +135,8 @@ public class Migration2 {
         
         // read all locators into memory.
         try {
+            final boolean verbose = (Boolean)options.get(VERBOSE);
+            
             out.println(String.format("Will migrate %s/%s/%s to %s/%s/%s for time %s to %s",
                     options.get(SRC_CLUSTER),
                     options.get(SRC_KEYSPACE),
@@ -143,6 +147,7 @@ public class Migration2 {
                     new Date((Long)options.get(FROM)),
                     new Date((Long)options.get(TO))
             ));
+            out.println(String.format("Verbose is %b", verbose));
             
             out.print(String.format("Reading and sorting locators from %s...", ((File)options.get(FILE)).getAbsolutePath()));
             Collection<StringLocator> locators = readLocators((File)options.get(FILE));
@@ -237,9 +242,11 @@ public class Migration2 {
                             if (copiedCols > 0) {
                                 rowCount.incrementAndGet();
                             }
-                            out.println(String.format("moved %d cols for %s (%s)", copiedCols, locator.toString(), Thread.currentThread().getName()));
+                            if (verbose || copiedCols > 0) {
+                                out.println(String.format("moved %d cols for %s (%s)", copiedCols, locator.toString(), Thread.currentThread().getName()));
+                            }
                             
-                            if (random.nextFloat() < verifyPercent) {
+                            if (copiedCols > 0 && random.nextFloat() < verifyPercent) {
                                 ColumnList<Long> srcData = srcKeyspace.prepareQuery(srcCf).getKey(locator)
                                         .withColumnRange(range)
                                         .execute()
@@ -565,6 +572,7 @@ public class Migration2 {
             
             options.put(RESUME, line.hasOption(RESUME) ? line.getOptionValue(RESUME) : DO_NOT_RESUME);
             options.put(VERIFY, line.hasOption(VERIFY) ? Double.parseDouble(line.getOptionValue(VERIFY)) : 0.005d);
+            options.put(VERBOSE, line.hasOption(VERBOSE) ? Boolean.parseBoolean(line.getOptionValue(VERBOSE)) : Boolean.TRUE);
             
         } catch (ParseException ex) {
             ex.printStackTrace(out);
