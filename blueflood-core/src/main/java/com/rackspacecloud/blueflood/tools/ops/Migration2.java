@@ -57,6 +57,7 @@ public class Migration2 {
     private static final String SAME = "SAME".intern();
     private static final String RENEW = "RENEW".intern();
     private static final String NONE = "NONE".intern();
+    private static final String DO_NOT_RESUME = "DO NOT RESUME".intern();
     private static final int CONCURRENCY_FACTOR = 2;
     private static final int ADDITIONAL_CONNECTIONS_PER_HOST = 4;
     
@@ -84,6 +85,7 @@ public class Migration2 {
     private static final String RATE_PER_MINUTE = "rate";
     
     private static final String CONCURRENCY = "concurrency";
+    private static final String RESUME = "resume";
     
     static {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
@@ -92,25 +94,25 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] ISO 6801 datetime (or millis since epoch) of when to start migrating data. defaults to one year ago.").create(FROM));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] ISO 6801 datetime (or millis since epoch) Datetime of when to stop migrating data. defaults to right now.").create(TO));
         
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Destination keyspace (default=data)").create(DST_KEYSPACE));
-        cliOptions.addOption(OptionBuilder.hasArg().withLongOpt("Destination column family to migrate").create(DST_CF));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Destination column family (default=metrics_1440m").create(DST_CF));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Destination cassandra version (default=2.0)").create(DST_VERSION));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Destination keyspace (default=data)").create(DST_KEYSPACE));
+        cliOptions.addOption(OptionBuilder.hasArg().withLongOpt("[optional] Destination column family to migrate").create(DST_CF));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Destination column family (default=metrics_1440m").create(DST_CF));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Destination cassandra version (default=2.0)").create(DST_VERSION));
         
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Source keyspace (default=DATA)").create(SRC_KEYSPACE));
-        cliOptions.addOption(OptionBuilder.hasArg().withLongOpt("Source column family to migrate").create(SRC_CF));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Source column family (default=metrics_1440m").create(SRC_CF));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Source cassandra version (default=1.0)").create(SRC_VERSION));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Source keyspace (default=DATA)").create(SRC_KEYSPACE));
+        cliOptions.addOption(OptionBuilder.hasArg().withLongOpt("[optional] Source column family to migrate").create(SRC_CF));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Source column family (default=metrics_1440m").create(SRC_CF));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Source cassandra version (default=1.0)").create(SRC_VERSION));
         
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Maximum number of rows to copy (default=INFINITY)").create(MAX_ROWS));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("TTL in seconds for copied columns (default=SAME), {SAME | RENEW | NONE}").create(TTL_SECONDS));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Maximum rate of transfer, in rows per minute (default=Integer.MAX_VALUE)").create(RATE_PER_MINUTE));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Maximum number of rows to copy (default=INFINITY)").create(MAX_ROWS));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] TTL in seconds for copied columns (default=SAME), {SAME | RENEW | NONE}").create(TTL_SECONDS));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Maximum rate of transfer, in rows per minute (default=Integer.MAX_VALUE)").create(RATE_PER_MINUTE));
         
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Number of read/write threads to use (default=1)").create(CONCURRENCY));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Number of read/write threads to use (default=1)").create(CONCURRENCY));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Locator to resume processing at.").create(RESUME));
         
         // todo: we need to move out the other features from Migration.java. Namely:
         // 5. verification.
-        // 6. resumption.
     }
     
     public static void main(String args[]) {
@@ -174,14 +176,28 @@ public class Migration2 {
                     new ThreadPoolExecutor.CallerRunsPolicy()
             );
             final AtomicBoolean breakSignal = new AtomicBoolean(false);
+            String resumeAt = options.get(RESUME).toString();
+            boolean skipping = resumeAt != DO_NOT_RESUME;
             
             // single threaded for now, while I get things working. todo: make multithreaded.
             final long startSeconds = System.currentTimeMillis() / 1000;
             
             for (StringLocator sl : locators) {
+                
+                // skip to resume;
+                if (skipping) {
+                    if (sl.locator.equals(resumeAt)) {
+                        skipping = false;
+                        out.println("Resuming at " + resumeAt);
+                    } else {
+                        continue;
+                    }
+                }
+                
                 if (breakSignal.get()) {
                     break;
                 }
+                
                 final String locatorString = sl.locator;
                 copyThreads.submit(new Runnable() {
                     public void run() {
@@ -482,6 +498,8 @@ public class Migration2 {
             options.put(TTL_SECONDS, ttlString);
             options.put(RATE_PER_MINUTE, ratePerMinute);
             options.put(CONCURRENCY, concurrency);
+            
+            options.put(RESUME, line.hasOption(RESUME) ? line.getOptionValue(RESUME) : DO_NOT_RESUME);
             
         } catch (ParseException ex) {
             ex.printStackTrace(out);
