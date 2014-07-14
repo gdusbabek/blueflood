@@ -1,6 +1,7 @@
 package com.rackspacecloud.blueflood.tools.ops;
 
 import com.google.common.base.Supplier;
+import com.google.common.collect.Lists;
 import com.netflix.astyanax.AstyanaxContext;
 import com.netflix.astyanax.ColumnListMutation;
 import com.netflix.astyanax.Keyspace;
@@ -48,6 +49,10 @@ import java.util.Map;
 
 public class Migration2 {
     
+    private static final String SAME = "SAME".intern();
+    private static final String RENEW = "RENEW".intern();
+    private static final String NONE = "NONE".intern();
+    
     private static final PrintStream out = System.out;
     
     private static final Options cliOptions = new Options();
@@ -70,6 +75,7 @@ public class Migration2 {
     private static final String TO = "to";
     
     private static final String MAX_ROWS = "rows";
+    private static final String TTL = "ttl";
     
     static {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
@@ -89,9 +95,9 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("Source cassandra version (default=1.0)").create(SRC_VERSION));
         
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("Maximum number of rows to copy (default=INFINITY)").create(MAX_ROWS));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("TTL in seconds for copied columns (default=SAME), {SAME | RENEW | NONE}").create(TTL));
         
         // todo: we need to move out the other features from Migration.java. Namely:
-        // 1. TTL
         // 2. rate limiting (rows per second)
         // 3. read concurrency
         // 4. write concurrency
@@ -131,7 +137,7 @@ public class Migration2 {
                     options.get(SRC_VERSION).toString()
             );
             Keyspace srcKeyspace = srcContext.getEntity();
-            ColumnFamily<Locator, Long> srcCf = (ColumnFamily<Locator, Long>)options.get(SRC_CF);
+            CassandraModel.MetricColumnFamily srcCf = (CassandraModel.MetricColumnFamily)options.get(SRC_CF);
             
             AstyanaxContext<Keyspace> dstContext = connect(
                     options.get(DST_CLUSTER).toString(),
@@ -139,16 +145,18 @@ public class Migration2 {
                     options.get(DST_VERSION).toString()
             );
             Keyspace dstKeyspace = dstContext.getEntity();
-            ColumnFamily<Locator, Long> dstCf = (ColumnFamily<Locator, Long>)options.get(DST_CF);
+            CassandraModel.MetricColumnFamily dstCf = (CassandraModel.MetricColumnFamily)options.get(DST_CF);
             
             final int maxRows = (Integer)options.get(MAX_ROWS);
             int rowCount = 0;
+            
+            final String ttl = options.get(TTL).toString();
             
             // single threaded for now, while I get things working. todo: make multithreaded.
             for (StringLocator sl : locators) {
                 try {
                     Locator locator = Locator.createLocatorFromDbKey(sl.locator);
-                    int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range);
+                    int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
                     if (copiedCols > 0) { 
                         rowCount += 1;
                     }
@@ -179,7 +187,7 @@ public class Migration2 {
     }
     
     // keep this method threadsafe!
-    private static int copy(Locator locator, Keyspace src, Keyspace dst, ColumnFamily<Locator, Long> srcCf, ColumnFamily<Locator, Long> dstCf, ByteBufferRange range) throws ConnectionException {
+    private static int copy(Locator locator, Keyspace src, Keyspace dst, CassandraModel.MetricColumnFamily srcCf, CassandraModel.MetricColumnFamily dstCf, ByteBufferRange range, final String ttl) throws ConnectionException {
         // read row.
         ColumnList<Long> columnList = src
                 .prepareQuery(srcCf)
@@ -193,12 +201,20 @@ public class Migration2 {
             return 0;
         }
         
+        int safetyTtlInSeconds = 5 * (int)dstCf.getDefaultTTL().toSeconds();
+        int nowInSeconds = (int)(System.currentTimeMillis() / 1000);
+        
         // write row.
         MutationBatch batch = dst.prepareMutationBatch();
         ColumnListMutation<Long> mutation = batch.withRow(dstCf, locator);
         for (Column<Long> c : columnList) {
-            // todo: need to have a TTL configured from the command line. See Mutation.java
-            mutation.putColumn(c.getName(), c.getByteBufferValue()); // todo: that TTL!
+            if (ttl != NONE) {
+                // ttl will either be the safety value or the difference between the safety value and the age of the column.
+                int ttlSeconds = ttl == RENEW ? 5 * safetyTtlInSeconds : (safetyTtlInSeconds - nowInSeconds + (int)(c.getName()/1000));
+                mutation.putColumn(c.getName(), c.getByteBufferValue(), ttlSeconds);
+            } else {
+                mutation.putColumn(c.getName(), c.getByteBufferValue());
+            }
         }
         batch.execute();
         return columnList.size();
@@ -361,7 +377,7 @@ public class Migration2 {
             
             // create a mapping of all cf names -> cf.
             // then determine which column family to process.
-            Map<String, ColumnFamily<Locator, Long>> nameToCf = new HashMap<String, ColumnFamily<Locator, Long>>() {{
+            Map<String, CassandraModel.MetricColumnFamily> nameToCf = new HashMap<String, CassandraModel.MetricColumnFamily>() {{
                 for (CassandraModel.MetricColumnFamily cf : CassandraModel.getMetricColumnFamilies()) {
                     put(cf.getName(), cf);
                 }
@@ -373,8 +389,14 @@ public class Migration2 {
                 throw new ParseException("Invalid destination column family");
             }
             
-            CassandraModel.MetricColumnFamily srcCf = (CassandraModel.MetricColumnFamily)nameToCf.get(line.getOptionValue(SRC_CF));
-            CassandraModel.MetricColumnFamily dstCf = (CassandraModel.MetricColumnFamily)nameToCf.get(line.getOptionValue(DST_CF));
+            CassandraModel.MetricColumnFamily srcCf = nameToCf.get(line.getOptionValue(SRC_CF));
+            CassandraModel.MetricColumnFamily dstCf = nameToCf.get(line.getOptionValue(DST_CF));
+            
+            List<String> validTtlStrings = Lists.newArrayList(SAME, RENEW, NONE);
+            String ttlString = line.hasOption(TTL) ? line.getOptionValue(TTL) : SAME;
+            if (!validTtlStrings.contains(ttlString)) {
+                throw new ParseException("Invalid TTL: " + ttlString);
+            }
             
             int maxRows = line.hasOption(MAX_ROWS) ? Integer.parseInt(line.getOptionValue(MAX_ROWS)) : Integer.MAX_VALUE;
                     
@@ -395,6 +417,8 @@ public class Migration2 {
             options.put(TO, line.hasOption(TO) ? parseDateTime(line.getOptionValue(TO)) : now);
             
             options.put(MAX_ROWS, maxRows);
+            options.put(TTL, ttlString);
+            
             
         } catch (ParseException ex) {
             ex.printStackTrace(out);
