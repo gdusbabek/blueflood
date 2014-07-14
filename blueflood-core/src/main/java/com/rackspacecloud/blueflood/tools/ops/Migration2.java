@@ -278,8 +278,20 @@ public class Migration2 {
 
             out.print("shutting down...");
             copyThreads.shutdown();
-            srcContext.shutdown();
-            dstContext.shutdown();
+            try {
+                boolean clean = copyThreads.awaitTermination(10, TimeUnit.MINUTES);
+                if (clean) {
+                    srcContext.shutdown();
+                    dstContext.shutdown();
+                } else {
+                    out.println("uncleanly");
+                    System.exit(-1);
+                }
+            } catch (InterruptedException ex) {
+                ex.printStackTrace(out);
+                System.exit(-1);
+            }
+            
             out.println("done");
             
         } catch (IOException ex) {
