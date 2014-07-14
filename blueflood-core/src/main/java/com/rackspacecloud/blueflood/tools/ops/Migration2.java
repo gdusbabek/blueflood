@@ -20,7 +20,6 @@ import com.netflix.astyanax.model.ConsistencyLevel;
 import com.netflix.astyanax.thrift.ThriftFamilyFactory;
 import com.netflix.astyanax.util.RangeBuilder;
 import com.rackspacecloud.blueflood.io.CassandraModel;
-import com.rackspacecloud.blueflood.io.IntegrationTestBase;
 import com.rackspacecloud.blueflood.types.Locator;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.GnuParser;
@@ -42,11 +41,10 @@ import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 public class Migration2 {
     
@@ -71,6 +69,8 @@ public class Migration2 {
     private static final String FROM = "from";
     private static final String TO = "to";
     
+    private static final String MAX_ROWS = "rows";
+    
     static {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withValueSeparator(',').withDescription("comma delimited list of host:port of cassandra cluster to write to").create(DST_CLUSTER));
@@ -87,6 +87,8 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().withLongOpt("Source column family to migrate").create(SRC_CF));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("Source column family (default=metrics_1440m").create(SRC_CF));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("Source cassandra version (default=1.0)").create(SRC_VERSION));
+        
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Maximum number of rows to copy (default=INFINITY)").create(MAX_ROWS));
         
         // todo: we need to move out the other features from Migration.java. Namely:
         // 1. TTL
@@ -108,7 +110,20 @@ public class Migration2 {
         
         // read all locators into memory.
         try {
+            out.println(String.format("Will migrate %s/%s/%s to %s/%s/%s for time %s to %s",
+                    options.get(SRC_CLUSTER),
+                    options.get(SRC_KEYSPACE),
+                    options.get(SRC_VERSION),
+                    options.get(DST_CLUSTER),
+                    options.get(DST_KEYSPACE),
+                    options.get(DST_VERSION),
+                    new Date((Long)options.get(FROM)),
+                    new Date((Long)options.get(TO))
+            ));
+            
+            out.print(String.format("Reading locators from %s...", ((File)options.get(FILE)).getAbsolutePath()));
             Collection<StringLocator> locators = readLocators((File)options.get(FILE));
+            out.println("done");
             
             AstyanaxContext<Keyspace> srcContext = connect(
                     options.get(SRC_CLUSTER).toString(),
@@ -126,18 +141,34 @@ public class Migration2 {
             Keyspace dstKeyspace = dstContext.getEntity();
             ColumnFamily<Locator, Long> dstCf = (ColumnFamily<Locator, Long>)options.get(DST_CF);
             
+            final int maxRows = (Integer)options.get(MAX_ROWS);
+            int rowCount = 0;
             
             // single threaded for now, while I get things working. todo: make multithreaded.
             for (StringLocator sl : locators) {
                 try {
                     Locator locator = Locator.createLocatorFromDbKey(sl.locator);
-                    copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range);
+                    int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range);
+                    if (copiedCols > 0) { 
+                        rowCount += 1;
+                    }
+                    out.println(String.format("moved %d cols for %s", copiedCols, locator.toString()));
                 } catch (ConnectionException ex) {
                     // something bad happened. stop processing, figure it out and start over.
                     ex.printStackTrace(out);
                     break;
                 }
+                
+                if (rowCount >= maxRows) {
+                    out.println("Reached max rows");
+                    break;
+                }
             }
+
+            out.print("shutting down...");
+            srcContext.shutdown();
+            dstContext.shutdown();
+            out.println("done");
             
         } catch (IOException ex) {
             ex.printStackTrace(out);
@@ -148,7 +179,7 @@ public class Migration2 {
     }
     
     // keep this method threadsafe!
-    private static void copy(Locator locator, Keyspace src, Keyspace dst, ColumnFamily<Locator, Long> srcCf, ColumnFamily<Locator, Long> dstCf, ByteBufferRange range) throws ConnectionException {
+    private static int copy(Locator locator, Keyspace src, Keyspace dst, ColumnFamily<Locator, Long> srcCf, ColumnFamily<Locator, Long> dstCf, ByteBufferRange range) throws ConnectionException {
         // read row.
         ColumnList<Long> columnList = src
                 .prepareQuery(srcCf)
@@ -156,6 +187,11 @@ public class Migration2 {
                 .getKey(locator)
                 .withColumnRange(range)
                 .execute().getResult();
+        
+        // don't bother with empty rows.
+        if (columnList.size() == 0) {
+            return 0;
+        }
         
         // write row.
         MutationBatch batch = dst.prepareMutationBatch();
@@ -165,8 +201,7 @@ public class Migration2 {
             mutation.putColumn(c.getName(), c.getByteBufferValue()); // todo: that TTL!
         }
         batch.execute();
-        
-        
+        return columnList.size();
     }
     
     // assume we have duplicate listings in the locator file. Some of them are more recent and therefore, more 
@@ -278,6 +313,7 @@ public class Migration2 {
     // connect to a database. Key features: 1 connection per host. If you want more connections, specify more hosts.
     // duplicates are ok.
     private static AstyanaxContext<Keyspace> connect(String clusterSpec, String keyspace, String version) {
+        out.print(String.format("Connecting to %s:%s/%s...", clusterSpec, keyspace, version));
         final List<Host> hosts = new ArrayList<Host>();
         for (String hostSpec : clusterSpec.split(",", -1)) {
             hosts.add(new Host(Host.parseHostFromHostAndPort(hostSpec), Host.parsePortFromHostAndPort(hostSpec, -1)));
@@ -305,6 +341,7 @@ public class Migration2 {
                 .withConnectionPoolMonitor(new CountingConnectionPoolMonitor())
                 .buildKeyspace(ThriftFamilyFactory.getInstance());
         context.start();
+        out.println("done");
         return context;
     }
     
@@ -339,6 +376,7 @@ public class Migration2 {
             CassandraModel.MetricColumnFamily srcCf = (CassandraModel.MetricColumnFamily)nameToCf.get(line.getOptionValue(SRC_CF));
             CassandraModel.MetricColumnFamily dstCf = (CassandraModel.MetricColumnFamily)nameToCf.get(line.getOptionValue(DST_CF));
             
+            int maxRows = line.hasOption(MAX_ROWS) ? Integer.parseInt(line.getOptionValue(MAX_ROWS)) : Integer.MAX_VALUE;
                     
             options.put(FILE, locatorFile);
             
@@ -355,6 +393,8 @@ public class Migration2 {
             // default range is one year ago until now.
             options.put(FROM, line.hasOption(FROM) ? parseDateTime(line.getOptionValue(FROM)) : now-(365L*24L*60L*60L*1000L));
             options.put(TO, line.hasOption(TO) ? parseDateTime(line.getOptionValue(TO)) : now);
+            
+            options.put(MAX_ROWS, maxRows);
             
         } catch (ParseException ex) {
             ex.printStackTrace(out);
