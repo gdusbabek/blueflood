@@ -45,18 +45,24 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class Migration2 {
     
     private static final String SAME = "SAME".intern();
     private static final String RENEW = "RENEW".intern();
     private static final String NONE = "NONE".intern();
+    private static final int CONCURRENCY_FACTOR = 2;
+    private static final int ADDITIONAL_CONNECTIONS_PER_HOST = 4;
     
     private static final PrintStream out = System.out;
     
     private static final Options cliOptions = new Options();
-    
-    private static final int BATCH_SIZE = 5;
     
     private static final String FILE = "file";
     
@@ -76,6 +82,8 @@ public class Migration2 {
     private static final String MAX_ROWS = "rows";
     private static final String TTL_SECONDS = "ttl";
     private static final String RATE_PER_MINUTE = "rate";
+    
+    private static final String CONCURRENCY = "concurrency";
     
     static {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
@@ -98,10 +106,11 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("TTL in seconds for copied columns (default=SAME), {SAME | RENEW | NONE}").create(TTL_SECONDS));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("Maximum rate of transfer, in rows per minute (default=Integer.MAX_VALUE)").create(RATE_PER_MINUTE));
         
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Number of read/write threads to use (default=1)").create(CONCURRENCY));
+        
         // todo: we need to move out the other features from Migration.java. Namely:
-        // 3. read concurrency
-        // 4. write concurrency
         // 5. verification.
+        // 6. resumption.
     }
     
     public static void main(String args[]) {
@@ -134,64 +143,96 @@ public class Migration2 {
             AstyanaxContext<Keyspace> srcContext = connect(
                     options.get(SRC_CLUSTER).toString(),
                     options.get(SRC_KEYSPACE).toString(),
-                    options.get(SRC_VERSION).toString()
+                    options.get(SRC_VERSION).toString(),
+                    (Integer)options.get(CONCURRENCY)
             );
-            Keyspace srcKeyspace = srcContext.getEntity();
-            CassandraModel.MetricColumnFamily srcCf = (CassandraModel.MetricColumnFamily)options.get(SRC_CF);
+            final Keyspace srcKeyspace = srcContext.getEntity();
+            final CassandraModel.MetricColumnFamily srcCf = (CassandraModel.MetricColumnFamily)options.get(SRC_CF);
             
             AstyanaxContext<Keyspace> dstContext = connect(
                     options.get(DST_CLUSTER).toString(),
                     options.get(DST_KEYSPACE).toString(),
-                    options.get(DST_VERSION).toString()
+                    options.get(DST_VERSION).toString(),
+                    (Integer)options.get(CONCURRENCY)
             );
-            Keyspace dstKeyspace = dstContext.getEntity();
-            CassandraModel.MetricColumnFamily dstCf = (CassandraModel.MetricColumnFamily)options.get(DST_CF);
+            final Keyspace dstKeyspace = dstContext.getEntity();
+            final CassandraModel.MetricColumnFamily dstCf = (CassandraModel.MetricColumnFamily)options.get(DST_CF);
             
             final int maxRowsPerMinute = (Integer)options.get(RATE_PER_MINUTE);
             final int maxRows = (Integer)options.get(MAX_ROWS);
-            int rowCount = 0;
+            final AtomicInteger rowCount = new AtomicInteger(0);
+            final int concurrency = (Integer)options.get(CONCURRENCY);
             
             
-            final String ttl = options.get(TTL_SECONDS).toString();
+            final String ttl = options.get(TTL_SECONDS).toString(); 
+            final ThreadPoolExecutor copyThreads = new ThreadPoolExecutor(
+                    concurrency, concurrency,
+                    0L, TimeUnit.MILLISECONDS, 
+                    // this means that we'll be consuming concurrency+1 maximum connections to the cluster.
+                    new LinkedBlockingQueue<Runnable>(concurrency),
+                    Executors.defaultThreadFactory(),
+                    new ThreadPoolExecutor.CallerRunsPolicy()
+            );
+            final AtomicBoolean breakSignal = new AtomicBoolean(false);
             
             // single threaded for now, while I get things working. todo: make multithreaded.
             final long startSeconds = System.currentTimeMillis() / 1000;
+            
             for (StringLocator sl : locators) {
-                // calculate current rows per minute.
-                double runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
-                double rowsPerMinute = (double)rowCount / runningMinutes;
-                
-                while (rowCount > 0 && rowsPerMinute > maxRowsPerMinute) {
-                    //out.println(String.format("%.2f > %d", rowsPerMinute, maxRowsPerMinute));
-                    try { Thread.currentThread().sleep(1000); } catch (Exception ex) {}
-                    
-                    runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
-                    rowsPerMinute = (double)rowCount / runningMinutes;
-                    
+                if (breakSignal.get()) {
+                    break;
                 }
-                
-                try {
-                    Locator locator = Locator.createLocatorFromDbKey(sl.locator);
-                    int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
-                    if (copiedCols > 0) { 
-                        rowCount += 1;
+                final String locatorString = sl.locator;
+                copyThreads.submit(new Runnable() {
+                    public void run() {
+                        
+                        // don't bother if we're being shut down.
+                        if (breakSignal.get()) {
+                            return;
+                        }
+                        
+                        // calculate current rows per minute.
+                        double runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
+                        double rowsPerMinute = (double)rowCount.get() / runningMinutes;
+                        
+                        // wait until rate limiting is over.
+                        while (rowsPerMinute > maxRowsPerMinute && rowCount.get() > 0) {
+                            //out.println(String.format("%.2f > %d", rowsPerMinute, maxRowsPerMinute));
+                            try { Thread.currentThread().sleep(1000); } catch (Exception ex) {}
+                            
+                            runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
+                            rowsPerMinute = (double)rowCount.get() / runningMinutes;
+                        }
+                        
+                        // copy this locator.
+                        try {
+                            Locator locator = Locator.createLocatorFromDbKey(locatorString);
+                            int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
+                            if (copiedCols > 0) { 
+                                rowCount.incrementAndGet();
+                            }
+                            out.println(String.format("moved %d cols for %s (%s)", copiedCols, locator.toString(), Thread.currentThread().getName()));
+                        } catch (ConnectionException ex) {
+                            // something bad happened. stop processing, figure it out and start over.
+                            ex.printStackTrace(out);
+                            breakSignal.set(true);
+                        }
+                        
+                        if (rowCount.get() >= maxRows) {
+                            out.println("Reached max rows " + Thread.currentThread().getName());
+                            breakSignal.set(true);
+                        }
                     }
-                    out.println(String.format("moved %d cols for %s", copiedCols, locator.toString()));
-                } catch (ConnectionException ex) {
-                    // something bad happened. stop processing, figure it out and start over.
-                    ex.printStackTrace(out);
-                    break;
-                }
-                
-                if (rowCount >= maxRows) {
-                    out.println("Reached max rows");
-                    break;
-                }
-                
-                
+                });
+
+            }
+            
+            while (copyThreads.getQueue().size() > 0) {
+                try { Thread.currentThread().sleep(1000); } catch (Exception ex) {};
             }
 
             out.print("shutting down...");
+            copyThreads.shutdown();
             srcContext.shutdown();
             dstContext.shutdown();
             out.println("done");
@@ -346,12 +387,13 @@ public class Migration2 {
     
     // connect to a database. Key features: 1 connection per host. If you want more connections, specify more hosts.
     // duplicates are ok.
-    private static AstyanaxContext<Keyspace> connect(String clusterSpec, String keyspace, String version) {
+    private static AstyanaxContext<Keyspace> connect(String clusterSpec, String keyspace, String version, int concurrency) {
         out.print(String.format("Connecting to %s:%s/%s...", clusterSpec, keyspace, version));
         final List<Host> hosts = new ArrayList<Host>();
         for (String hostSpec : clusterSpec.split(",", -1)) {
             hosts.add(new Host(Host.parseHostFromHostAndPort(hostSpec), Host.parsePortFromHostAndPort(hostSpec, -1)));
         }
+        int maxConsPerHost = Math.max(1, concurrency / hosts.size()) + ADDITIONAL_CONNECTIONS_PER_HOST;
         AstyanaxContext<Keyspace> context = new AstyanaxContext.Builder()
                 .forKeyspace(keyspace)
                 .withHostSupplier(new Supplier<List<Host>>() {
@@ -363,12 +405,12 @@ public class Migration2 {
                 .withAstyanaxConfiguration(new AstyanaxConfigurationImpl()
                         .setDiscoveryType(NodeDiscoveryType.NONE)
                         .setDefaultReadConsistencyLevel(ConsistencyLevel.CL_ONE)
-                        .setConnectionPoolType(ConnectionPoolType.BAG)
+                        .setConnectionPoolType(ConnectionPoolType.ROUND_ROBIN)
                         .setTargetCassandraVersion(version)
                 )
                 .withConnectionPoolConfiguration(new ConnectionPoolConfigurationImpl(keyspace)
-                        .setMaxConns(hosts.size())
-                        .setMaxConnsPerHost(1)
+                        .setMaxConns(concurrency * CONCURRENCY_FACTOR)       // are these
+                        .setMaxConnsPerHost(maxConsPerHost) // numbers safe?
                         .setConnectTimeout(2000)
                         .setSocketTimeout(5000 * 100)
                 )
@@ -418,6 +460,7 @@ public class Migration2 {
             
             int maxRows = line.hasOption(MAX_ROWS) ? Integer.parseInt(line.getOptionValue(MAX_ROWS)) : Integer.MAX_VALUE;
             int ratePerMinute = line.hasOption(RATE_PER_MINUTE) ? Integer.parseInt(line.getOptionValue(RATE_PER_MINUTE)) : Integer.MAX_VALUE;
+            int concurrency = line.hasOption(CONCURRENCY) ? Integer.parseInt(line.getOptionValue(CONCURRENCY)) : 1;
                     
             options.put(FILE, locatorFile);
             
@@ -438,7 +481,7 @@ public class Migration2 {
             options.put(MAX_ROWS, maxRows);
             options.put(TTL_SECONDS, ttlString);
             options.put(RATE_PER_MINUTE, ratePerMinute);
-            
+            options.put(CONCURRENCY, concurrency);
             
         } catch (ParseException ex) {
             ex.printStackTrace(out);
