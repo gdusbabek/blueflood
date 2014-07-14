@@ -2,6 +2,7 @@ package com.rackspacecloud.blueflood.tools.ops;
 
 import com.google.common.base.Supplier;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 import com.netflix.astyanax.AstyanaxContext;
 import com.netflix.astyanax.ColumnListMutation;
 import com.netflix.astyanax.Keyspace;
@@ -43,8 +44,10 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -59,9 +62,10 @@ public class Migration2 {
     private static final String NONE = "NONE".intern();
     private static final String DO_NOT_RESUME = "DO NOT RESUME".intern();
     private static final int CONCURRENCY_FACTOR = 2;
-    private static final int ADDITIONAL_CONNECTIONS_PER_HOST = 4;
+    private static final int ADDITIONAL_CONNECTIONS_PER_HOST = 6;
     
     private static final PrintStream out = System.out;
+    final static Random random = new Random(System.nanoTime());
     
     private static final Options cliOptions = new Options();
     
@@ -86,6 +90,7 @@ public class Migration2 {
     
     private static final String CONCURRENCY = "concurrency";
     private static final String RESUME = "resume";
+    private static final String VERIFY = "verify";
     
     static {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
@@ -110,6 +115,7 @@ public class Migration2 {
         
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Number of read/write threads to use (default=1)").create(CONCURRENCY));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Locator to resume processing at.").create(RESUME));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Percentage of copies to verify by reading (0..1) (default=0.005)").create(VERIFY));
         
         // todo: we need to move out the other features from Migration.java. Namely:
         // 5. verification.
@@ -164,7 +170,7 @@ public class Migration2 {
             final int maxRows = (Integer)options.get(MAX_ROWS);
             final AtomicInteger rowCount = new AtomicInteger(0);
             final int concurrency = (Integer)options.get(CONCURRENCY);
-            
+            final double verifyPercent = (Double)options.get(VERIFY); 
             
             final String ttl = options.get(TTL_SECONDS).toString(); 
             final ThreadPoolExecutor copyThreads = new ThreadPoolExecutor(
@@ -201,39 +207,62 @@ public class Migration2 {
                 final String locatorString = sl.locator;
                 copyThreads.submit(new Runnable() {
                     public void run() {
-                        
+
                         // don't bother if we're being shut down.
                         if (breakSignal.get()) {
                             return;
                         }
-                        
+
                         // calculate current rows per minute.
-                        double runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
-                        double rowsPerMinute = (double)rowCount.get() / runningMinutes;
-                        
+                        double runningMinutes = (double) ((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
+                        double rowsPerMinute = (double) rowCount.get() / runningMinutes;
+
                         // wait until rate limiting is over.
                         while (rowsPerMinute > maxRowsPerMinute && rowCount.get() > 0) {
                             //out.println(String.format("%.2f > %d", rowsPerMinute, maxRowsPerMinute));
-                            try { Thread.currentThread().sleep(1000); } catch (Exception ex) {}
-                            
-                            runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
-                            rowsPerMinute = (double)rowCount.get() / runningMinutes;
+                            try {
+                                Thread.currentThread().sleep(1000);
+                            }
+                            catch (Exception ex) {
+                            }
+
+                            runningMinutes = (double) ((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
+                            rowsPerMinute = (double) rowCount.get() / runningMinutes;
                         }
-                        
+
                         // copy this locator.
                         try {
                             Locator locator = Locator.createLocatorFromDbKey(locatorString);
                             int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
-                            if (copiedCols > 0) { 
+                            if (copiedCols > 0) {
                                 rowCount.incrementAndGet();
                             }
                             out.println(String.format("moved %d cols for %s (%s)", copiedCols, locator.toString(), Thread.currentThread().getName()));
-                        } catch (ConnectionException ex) {
+                            
+                            if (random.nextFloat() < verifyPercent) {
+                                ColumnList<Long> srcData = srcKeyspace.prepareQuery(srcCf).getKey(locator)
+                                        .withColumnRange(range)
+                                        .execute()
+                                        .getResult();
+                                ColumnList<Long> dstData = dstKeyspace.prepareQuery(dstCf).getKey(locator)
+                                        .withColumnRange(range)
+                                        .execute()
+                                        .getResult();
+                                try {
+                                    checkSameResults(srcData, dstData);
+                                    out.println(String.format("verified copy for %s", locator.toString()));
+                                } catch (Exception any) {
+                                    out.println(String.format("for %s %s", locator.toString(), any.getMessage()));
+                                    breakSignal.set(true);
+                                }
+                            }
+                        }
+                        catch (ConnectionException ex) {
                             // something bad happened. stop processing, figure it out and start over.
                             ex.printStackTrace(out);
                             breakSignal.set(true);
                         }
-                        
+
                         if (rowCount.get() >= maxRows) {
                             out.println("Reached max rows " + Thread.currentThread().getName());
                             breakSignal.set(true);
@@ -259,6 +288,29 @@ public class Migration2 {
         }
         
         
+    }
+    
+    private static void checkSameResults(ColumnList<Long> x, ColumnList<Long> y) throws Exception {
+        if (x.size() != y.size()) {
+            throw new Exception("source and destination column lengths do not match");
+        }
+        if (Sets.difference(new HashSet<Long>(x.getColumnNames()), new HashSet<Long>(y.getColumnNames())).size() != 0) {
+            throw new Exception("source and destination did not contain the same column names");
+        }
+        
+        for (int i = 0; i < x.size(); i++) {
+            byte[] bx = x.getColumnByIndex(i).getByteArrayValue();
+            byte[] by = y.getColumnByIndex(i).getByteArrayValue();
+            if (bx.length != by.length) {
+                throw new Exception("source and destination column values did not match for column " + i);
+            }
+            // only examine every third byte.
+            for (int j = 0; j < bx.length; j+=3) {
+                if (bx[j] != by[j]) {
+                    throw new Exception("source and destination column values did not match for column " + i);
+                }
+            }
+        }
     }
     
     // keep this method threadsafe!
@@ -291,7 +343,7 @@ public class Migration2 {
                 mutation.putColumn(c.getName(), c.getByteBufferValue());
             }
         }
-        batch.execute();
+        batch.execute().getResult();
         return columnList.size();
     }
     
@@ -500,6 +552,7 @@ public class Migration2 {
             options.put(CONCURRENCY, concurrency);
             
             options.put(RESUME, line.hasOption(RESUME) ? line.getOptionValue(RESUME) : DO_NOT_RESUME);
+            options.put(VERIFY, line.hasOption(VERIFY) ? Double.parseDouble(line.getOptionValue(VERIFY)) : 0.005d);
             
         } catch (ParseException ex) {
             ex.printStackTrace(out);
