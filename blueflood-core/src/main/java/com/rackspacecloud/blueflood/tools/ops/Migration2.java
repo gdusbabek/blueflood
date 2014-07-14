@@ -123,7 +123,7 @@ public class Migration2 {
                     options.get(DST_KEYSPACE).toString(),
                     options.get(DST_VERSION).toString()
             );
-            Keyspace dstKeyspace = srcContext.getEntity();
+            Keyspace dstKeyspace = dstContext.getEntity();
             ColumnFamily<Locator, Long> dstCf = (ColumnFamily<Locator, Long>)options.get(DST_CF);
             
             
