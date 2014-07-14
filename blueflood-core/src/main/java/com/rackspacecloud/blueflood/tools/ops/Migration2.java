@@ -210,6 +210,7 @@ public class Migration2 {
                 }
                 
                 final String locatorString = sl.locator;
+                final long locatorStamp = sl.timestamp;
                 copyThreads.submit(new Runnable() {
                     public void run() {
 
@@ -243,7 +244,7 @@ public class Migration2 {
                                 rowCount.incrementAndGet();
                             }
                             if (verbose || copiedCols > 0) {
-                                out.println(String.format("moved %d cols for %s (%s)", copiedCols, locator.toString(), Thread.currentThread().getName()));
+                                out.println(String.format("moved %d cols for %s last seen %s (%s)", copiedCols, locator.toString(), new Date(locatorStamp), Thread.currentThread().getName()));
                             }
                             
                             if (copiedCols > 0 && random.nextFloat() < verifyPercent) {
@@ -300,13 +301,12 @@ public class Migration2 {
             }
             
             out.println("done");
+            out.println(String.format("%d rows", rowCount.get()));
             
         } catch (IOException ex) {
             ex.printStackTrace(out);
             System.exit(-1);
         }
-        
-        
     }
     
     private static void checkSameResults(ColumnList<Long> x, ColumnList<Long> y) throws Exception {
@@ -395,6 +395,8 @@ public class Migration2 {
         
         ArrayList<StringLocator> allLocators = new ArrayList<StringLocator>(locators.values());
         Collections.sort(allLocators);
+        // we want most recent first.
+        Collections.reverse(allLocators);
         return allLocators;
     }
     
@@ -446,6 +448,7 @@ public class Migration2 {
             return other.locator.equals(this.locator);
         }
 
+        // standard ascending order comparator.
         @Override
         public int compareTo(StringLocator o) {
             long diff = timestamp - o.timestamp;
