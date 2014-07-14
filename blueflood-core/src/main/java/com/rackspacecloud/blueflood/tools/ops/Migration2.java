@@ -15,7 +15,6 @@ import com.netflix.astyanax.connectionpool.impl.CountingConnectionPoolMonitor;
 import com.netflix.astyanax.impl.AstyanaxConfigurationImpl;
 import com.netflix.astyanax.model.ByteBufferRange;
 import com.netflix.astyanax.model.Column;
-import com.netflix.astyanax.model.ColumnFamily;
 import com.netflix.astyanax.model.ColumnList;
 import com.netflix.astyanax.model.ConsistencyLevel;
 import com.netflix.astyanax.thrift.ThriftFamilyFactory;
@@ -75,7 +74,8 @@ public class Migration2 {
     private static final String TO = "to";
     
     private static final String MAX_ROWS = "rows";
-    private static final String TTL = "ttl";
+    private static final String TTL_SECONDS = "ttl";
+    private static final String RATE_PER_MINUTE = "rate";
     
     static {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
@@ -95,10 +95,10 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("Source cassandra version (default=1.0)").create(SRC_VERSION));
         
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("Maximum number of rows to copy (default=INFINITY)").create(MAX_ROWS));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("TTL in seconds for copied columns (default=SAME), {SAME | RENEW | NONE}").create(TTL));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("TTL in seconds for copied columns (default=SAME), {SAME | RENEW | NONE}").create(TTL_SECONDS));
+        cliOptions.addOption(OptionBuilder.hasArg().withDescription("Maximum rate of transfer, in rows per minute (default=Integer.MAX_VALUE)").create(RATE_PER_MINUTE));
         
         // todo: we need to move out the other features from Migration.java. Namely:
-        // 2. rate limiting (rows per second)
         // 3. read concurrency
         // 4. write concurrency
         // 5. verification.
@@ -127,9 +127,9 @@ public class Migration2 {
                     new Date((Long)options.get(TO))
             ));
             
-            out.print(String.format("Reading locators from %s...", ((File)options.get(FILE)).getAbsolutePath()));
+            out.print(String.format("Reading and sorting locators from %s...", ((File)options.get(FILE)).getAbsolutePath()));
             Collection<StringLocator> locators = readLocators((File)options.get(FILE));
-            out.println("done");
+            out.println(String.format("done (%d)", locators.size()));
             
             AstyanaxContext<Keyspace> srcContext = connect(
                     options.get(SRC_CLUSTER).toString(),
@@ -147,13 +147,29 @@ public class Migration2 {
             Keyspace dstKeyspace = dstContext.getEntity();
             CassandraModel.MetricColumnFamily dstCf = (CassandraModel.MetricColumnFamily)options.get(DST_CF);
             
+            final int maxRowsPerMinute = (Integer)options.get(RATE_PER_MINUTE);
             final int maxRows = (Integer)options.get(MAX_ROWS);
             int rowCount = 0;
             
-            final String ttl = options.get(TTL).toString();
+            
+            final String ttl = options.get(TTL_SECONDS).toString();
             
             // single threaded for now, while I get things working. todo: make multithreaded.
+            final long startSeconds = System.currentTimeMillis() / 1000;
             for (StringLocator sl : locators) {
+                // calculate current rows per minute.
+                double runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
+                double rowsPerMinute = (double)rowCount / runningMinutes;
+                
+                while (rowCount > 0 && rowsPerMinute > maxRowsPerMinute) {
+                    //out.println(String.format("%.2f > %d", rowsPerMinute, maxRowsPerMinute));
+                    try { Thread.currentThread().sleep(1000); } catch (Exception ex) {}
+                    
+                    runningMinutes = (double)((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
+                    rowsPerMinute = (double)rowCount / runningMinutes;
+                    
+                }
+                
                 try {
                     Locator locator = Locator.createLocatorFromDbKey(sl.locator);
                     int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
@@ -171,6 +187,8 @@ public class Migration2 {
                     out.println("Reached max rows");
                     break;
                 }
+                
+                
             }
 
             out.print("shutting down...");
@@ -393,12 +411,13 @@ public class Migration2 {
             CassandraModel.MetricColumnFamily dstCf = nameToCf.get(line.getOptionValue(DST_CF));
             
             List<String> validTtlStrings = Lists.newArrayList(SAME, RENEW, NONE);
-            String ttlString = line.hasOption(TTL) ? line.getOptionValue(TTL) : SAME;
+            String ttlString = line.hasOption(TTL_SECONDS) ? line.getOptionValue(TTL_SECONDS) : SAME;
             if (!validTtlStrings.contains(ttlString)) {
                 throw new ParseException("Invalid TTL: " + ttlString);
             }
             
             int maxRows = line.hasOption(MAX_ROWS) ? Integer.parseInt(line.getOptionValue(MAX_ROWS)) : Integer.MAX_VALUE;
+            int ratePerMinute = line.hasOption(RATE_PER_MINUTE) ? Integer.parseInt(line.getOptionValue(RATE_PER_MINUTE)) : Integer.MAX_VALUE;
                     
             options.put(FILE, locatorFile);
             
@@ -417,7 +436,8 @@ public class Migration2 {
             options.put(TO, line.hasOption(TO) ? parseDateTime(line.getOptionValue(TO)) : now);
             
             options.put(MAX_ROWS, maxRows);
-            options.put(TTL, ttlString);
+            options.put(TTL_SECONDS, ttlString);
+            options.put(RATE_PER_MINUTE, ratePerMinute);
             
             
         } catch (ParseException ex) {
