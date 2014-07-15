@@ -97,17 +97,16 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withDescription("Location of locator file").create(FILE));
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withValueSeparator(',').withDescription("comma delimited list of host:port of cassandra cluster to write to").create(DST_CLUSTER));
         cliOptions.addOption(OptionBuilder.hasArg().isRequired().withValueSeparator(',').withDescription("comma delimited list of host:port of cassandra cluster to read from").create(SRC_CLUSTER));
+        cliOptions.addOption(OptionBuilder.hasArg().isRequired().withLongOpt("Destination column family to migrate").create(DST_CF));
+        cliOptions.addOption(OptionBuilder.hasArg().isRequired().withLongOpt("Source column family to migrate").create(SRC_CF));
+
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] ISO 6801 datetime (or millis since epoch) of when to start migrating data. defaults to one year ago.").create(FROM));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] ISO 6801 datetime (or millis since epoch) Datetime of when to stop migrating data. defaults to right now.").create(TO));
         
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Destination keyspace (default=data)").create(DST_KEYSPACE));
-        cliOptions.addOption(OptionBuilder.hasArg().withLongOpt("[optional] Destination column family to migrate").create(DST_CF));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Destination column family (default=metrics_1440m").create(DST_CF));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Destination cassandra version (default=2.0)").create(DST_VERSION));
         
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Source keyspace (default=DATA)").create(SRC_KEYSPACE));
-        cliOptions.addOption(OptionBuilder.hasArg().withLongOpt("[optional] Source column family to migrate").create(SRC_CF));
-        cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Source column family (default=metrics_1440m").create(SRC_CF));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Source cassandra version (default=1.0)").create(SRC_VERSION));
         
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Maximum number of rows to copy (default=INFINITY)").create(MAX_ROWS));
@@ -244,7 +243,7 @@ public class Migration2 {
                                 rowCount.incrementAndGet();
                             }
                             if (verbose || copiedCols > 0) {
-                                out.println(String.format("moved %d cols for %s last seen %s (%s)", copiedCols, locator.toString(), new Date(locatorStamp), Thread.currentThread().getName()));
+                                out.println(String.format("moved %d cols for %dth locator %s last seen %s (%s)", copiedCols, rowCount.get(), locator.toString(), new Date(locatorStamp), Thread.currentThread().getName()));
                             }
                             
                             if (copiedCols > 0 && random.nextFloat() < verifyPercent) {
@@ -356,7 +355,7 @@ public class Migration2 {
         for (Column<Long> c : columnList) {
             if (ttl != NONE) {
                 // ttl will either be the safety value or the difference between the safety value and the age of the column.
-                int ttlSeconds = ttl == RENEW ? 5 * safetyTtlInSeconds : (safetyTtlInSeconds - nowInSeconds + (int)(c.getName()/1000));
+                int ttlSeconds = ttl == RENEW ? safetyTtlInSeconds : (safetyTtlInSeconds - nowInSeconds + (int)(c.getName()/1000));
                 mutation.putColumn(c.getName(), c.getByteBufferValue(), ttlSeconds);
             } else {
                 mutation.putColumn(c.getName(), c.getByteBufferValue());
@@ -532,15 +531,16 @@ public class Migration2 {
                     put(cf.getName(), cf);
                 }
             }};
-            if (nameToCf.get(line.getOptionValue(SRC_CF)) == null) {
-                throw new ParseException("Invalid source column family");
-            }
-            if (nameToCf.get(line.getOptionValue(DST_CF)) == null) {
-                throw new ParseException("Invalid destination column family");
-            }
             
             CassandraModel.MetricColumnFamily srcCf = nameToCf.get(line.getOptionValue(SRC_CF));
             CassandraModel.MetricColumnFamily dstCf = nameToCf.get(line.getOptionValue(DST_CF));
+
+            if (srcCf == null) {
+                throw new ParseException("Invalid source column family");
+            }
+            if (dstCf == null) {
+                throw new ParseException("Invalid destination column family");
+            }
             
             List<String> validTtlStrings = Lists.newArrayList(SAME, RENEW, NONE);
             String ttlString = line.hasOption(TTL_SECONDS) ? line.getOptionValue(TTL_SECONDS) : SAME;
