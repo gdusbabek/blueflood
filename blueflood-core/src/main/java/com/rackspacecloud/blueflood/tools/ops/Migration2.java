@@ -555,7 +555,7 @@ public class Migration2 {
             options.put(FILE, locatorFile);
             
             options.put(DST_CLUSTER, line.getOptionValue(DST_CLUSTER));
-            options.put(DST_KEYSPACE, line.hasOption(DST_KEYSPACE) ? line.getOptionValue(DST_KEYSPACE) : "DATA");
+            options.put(DST_KEYSPACE, line.hasOption(DST_KEYSPACE) ? line.getOptionValue(DST_KEYSPACE) : "data");
             options.put(DST_CF, dstCf);
             options.put(DST_VERSION, line.hasOption(DST_VERSION) ? line.getOptionValue(DST_VERSION) : "2.0");
             
