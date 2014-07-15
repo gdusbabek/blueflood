@@ -39,6 +39,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -63,6 +64,8 @@ public class Migration2 {
     private static final String DO_NOT_RESUME = "DO NOT RESUME".intern();
     private static final int CONCURRENCY_FACTOR = 2;
     private static final int ADDITIONAL_CONNECTIONS_PER_HOST = 6;
+    private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd");
+    private static final SimpleDateFormat TIMESTAMP_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm");
     
     private static final PrintStream out = System.out;
     final static Random random = new Random(System.nanoTime());
@@ -117,9 +120,6 @@ public class Migration2 {
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Locator to resume processing at.").create(RESUME));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Percentage of copies to verify by reading (0..1) (default=0.005)").create(VERIFY));
         cliOptions.addOption(OptionBuilder.hasArg().withDescription("[optional] Include all output (default=true)").create(VERBOSE));
-        
-        // todo: we need to move out the other features from Migration.java. Namely:
-        // 5. verification.
     }
     
     public static void main(String args[]) {
@@ -128,9 +128,9 @@ public class Migration2 {
         Map<String, Object> options = parseOptions(args);
         
         // establish column range.
-                final ByteBufferRange range = new RangeBuilder()
-                    .setStart((Long) options.get(FROM))
-                    .setEnd((Long) options.get(TO)).build();
+        final ByteBufferRange range = new RangeBuilder()
+            .setStart((Long) options.get(FROM))
+            .setEnd((Long) options.get(TO)).build();
         
         // read all locators into memory.
         try {
@@ -143,8 +143,8 @@ public class Migration2 {
                     options.get(DST_CLUSTER),
                     options.get(DST_KEYSPACE),
                     options.get(DST_VERSION),
-                    new Date((Long)options.get(FROM)),
-                    new Date((Long)options.get(TO))
+                    TIMESTAMP_FORMAT.format(new Date((Long)options.get(FROM))),
+                    TIMESTAMP_FORMAT.format(new Date((Long)options.get(TO)))
             ));
             out.println(String.format("Verbose is %b", verbose));
             
@@ -189,7 +189,6 @@ public class Migration2 {
             String resumeAt = options.get(RESUME).toString();
             boolean skipping = resumeAt != DO_NOT_RESUME;
             
-            // single threaded for now, while I get things working. todo: make multithreaded.
             final long startSeconds = System.currentTimeMillis() / 1000;
             
             for (StringLocator sl : locators) {
@@ -239,11 +238,12 @@ public class Migration2 {
                         try {
                             Locator locator = Locator.createLocatorFromDbKey(locatorString);
                             int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
+                            int rowId = 0;
                             if (copiedCols > 0) {
-                                rowCount.incrementAndGet();
+                                rowId = rowCount.incrementAndGet();
                             }
                             if (verbose || copiedCols > 0) {
-                                out.println(String.format("moved %d cols for %d th locator %s last seen %s (%s)", copiedCols, rowCount.get(), locator.toString(), new Date(locatorStamp), Thread.currentThread().getName()));
+                                out.println(String.format("%d moved %d cols for locator %s last seen %s (%s)", rowId, copiedCols, locator.toString(), DATE_FORMAT.format(new Date(locatorStamp)), Thread.currentThread().getName()));
                             }
                             
                             if (copiedCols > 0 && random.nextFloat() < verifyPercent) {
@@ -300,7 +300,7 @@ public class Migration2 {
             }
             
             out.println("done");
-            out.println(String.format("%d rows", rowCount.get()));
+            out.println(String.format("%d rows; %d candidates", rowCount.get(), locators.size()));
             
         } catch (IOException ex) {
             ex.printStackTrace(out);
