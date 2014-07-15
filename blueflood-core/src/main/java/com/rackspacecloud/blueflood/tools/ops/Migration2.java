@@ -243,7 +243,7 @@ public class Migration2 {
                                 rowCount.incrementAndGet();
                             }
                             if (verbose || copiedCols > 0) {
-                                out.println(String.format("moved %d cols for %dth locator %s last seen %s (%s)", copiedCols, rowCount.get(), locator.toString(), new Date(locatorStamp), Thread.currentThread().getName()));
+                                out.println(String.format("moved %d cols for %d th locator %s last seen %s (%s)", copiedCols, rowCount.get(), locator.toString(), new Date(locatorStamp), Thread.currentThread().getName()));
                             }
                             
                             if (copiedCols > 0 && random.nextFloat() < verifyPercent) {
@@ -555,12 +555,12 @@ public class Migration2 {
             options.put(FILE, locatorFile);
             
             options.put(DST_CLUSTER, line.getOptionValue(DST_CLUSTER));
-            options.put(DST_KEYSPACE, line.hasOption(DST_KEYSPACE) ? line.getOptionValue(DST_KEYSPACE) : "data");
+            options.put(DST_KEYSPACE, line.hasOption(DST_KEYSPACE) ? line.getOptionValue(DST_KEYSPACE) : "DATA");
             options.put(DST_CF, dstCf);
             options.put(DST_VERSION, line.hasOption(DST_VERSION) ? line.getOptionValue(DST_VERSION) : "2.0");
             
             options.put(SRC_CLUSTER, line.getOptionValue(SRC_CLUSTER));
-            options.put(SRC_KEYSPACE, line.hasOption(SRC_KEYSPACE) ? line.getOptionValue(SRC_KEYSPACE) : "data");
+            options.put(SRC_KEYSPACE, line.hasOption(SRC_KEYSPACE) ? line.getOptionValue(SRC_KEYSPACE) : "DATA");
             options.put(SRC_CF, srcCf);
             options.put(SRC_VERSION, line.hasOption(SRC_VERSION) ? line.getOptionValue(SRC_VERSION) : "1.0");
             
