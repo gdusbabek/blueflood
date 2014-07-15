@@ -11,6 +11,7 @@ import com.netflix.astyanax.MutationBatch;
 import com.netflix.astyanax.connectionpool.Host;
 import com.netflix.astyanax.connectionpool.NodeDiscoveryType;
 import com.netflix.astyanax.connectionpool.exceptions.ConnectionException;
+import com.netflix.astyanax.connectionpool.exceptions.OperationTimeoutException;
 import com.netflix.astyanax.connectionpool.impl.ConnectionPoolConfigurationImpl;
 import com.netflix.astyanax.connectionpool.impl.ConnectionPoolType;
 import com.netflix.astyanax.connectionpool.impl.CountingConnectionPoolMonitor;
@@ -246,7 +247,7 @@ public class Migration2 {
                                 rowId = rowCount.incrementAndGet();
                             }
                             if (verbose || copiedCols > 0) {
-                                out.println(String.format("%d moved %d cols for locator %s last seen %s (%s)", rowId, copiedCols, locator.toString(), DATE_FORMAT.format(new Date(locatorStamp)), Thread.currentThread().getName()));
+                                out.println(String.format("%d moved %d cols for locator %s last seen %s (%s) %.2f rpm", rowId, copiedCols, locator.toString(), DATE_FORMAT.format(new Date(locatorStamp)), Thread.currentThread().getName(), rowsPerMinute));
                             }
                             
                             if (copiedCols > 0 && random.nextFloat() < verifyPercent) {
@@ -254,34 +255,43 @@ public class Migration2 {
                                 Exception problem = null;
                                 ColumnList<Long> srcDump = null, dstDump = null;
                                 boolean possibleTrouble = false;
-                                while (tries-- > 0) {
-                                    ColumnList<Long> srcData = srcKeyspace
-                                            .prepareQuery(srcCf)
-                                            .getKey(locator)
-                                            .withColumnRange(range)
-                                            .execute()
-                                            .getResult();
-                                    ColumnList<Long> dstData = dstKeyspace
-                                            .prepareQuery(dstCf)
-                                            .getKey(locator)
-                                            .withColumnRange(range)
-                                            .execute()
-                                            .getResult();
+                                ColumnList<Long> srcData = null;
+                                ColumnList<Long> dstData = null;
+                                while (tries > 0) {
                                     try {
-                                        checkSameResults(srcData, dstData);
-                                        out.println(String.format("Verified%scopy for %s", possibleTrouble ? " (barely) " : " ", locator.toString()));
+                                        // take a little break. this gives data a chance to move around.
+                                        Thread.currentThread().sleep(1000);
+                                        srcData = srcKeyspace
+                                                .prepareQuery(srcCf)
+                                                .setConsistencyLevel(ConsistencyLevel.CL_QUORUM)
+                                                .getKey(locator)
+                                                .withColumnRange(range)
+                                                .execute()
+                                                .getResult();
+                                        dstData = dstKeyspace
+                                                .prepareQuery(dstCf)
+                                                .getKey(locator)
+                                                .withColumnRange(range)
+                                                .execute()
+                                                .getResult();
+                                    
+                                        int matches = checkSameResults(srcData, dstData);
+                                        out.println(String.format("Verified%scopy for %s src:%d,dst:%d,ver:%d", possibleTrouble ? " (barely) " : " ", locator.toString(), srcData.size(), dstData.size(), matches));
                                         problem = null;
                                         break;
+                                    } catch (OperationTimeoutException ex) {
+                                        out.println("Verification timed out. sleeping");
+                                        try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
+                                        // do not decrement tries.
+                                        continue;
                                     } catch (Exception any) {
                                         problem = any;
                                         srcDump = srcData;
                                         dstDump = dstData;
                                         out.println(String.format("Verification trouble for %s. %s", locator.toString(), any.getMessage()));
                                         possibleTrouble = true;
-                                        
-                                        // take a little break.
-                                        try { Thread.currentThread().sleep(1000); } catch (Exception ex) {}
                                     }
+                                    tries--;
                                 }
                                 
                                 if (problem != null) {
@@ -335,29 +345,34 @@ public class Migration2 {
         }
     }
     
-    private static void checkSameResults(ColumnList<Long> source, ColumnList<Long> dest) throws Exception {
-        // there may be more columns in dest, but not less.
-        if (source.size() > dest.size()) {
+    private static int checkSameResults(ColumnList<Long> source, ColumnList<Long> dest) throws Exception {
+        // source size should not be bigger than dest.
+        // a 1 col delta is ok to account for a single TTL expiration.
+        if (source.size() - dest.size() > 1) {
             throw new Exception(String.format("some columns were missed. source:%d, dest:%d", source.size(), dest.size()));
         }
         
-        // verify that ALL columns in source are in dest and that values match.
-        Set<Long> destColNames = new HashSet<Long>(dest.getColumnNames());
-        StringBuilder missingCols = new StringBuilder();
-        for (Long srcColName : source.getColumnNames()) {
-            if (!destColNames.contains(srcColName)) {
-                // keep track of which columns are missing.
-                missingCols = missingCols.append(srcColName).append(",");
-            } else if (!bytesSame(source.getColumnByName(srcColName).getByteArrayValue(), dest.getColumnByName(srcColName).getByteArrayValue())) {
+        // remove the difference(dest, source) from dest.
+        Set<Long> compareCols = Sets.intersection(
+                new HashSet<Long>(source.getColumnNames()),
+                new HashSet<Long>(dest.getColumnNames()));
+        
+        List<Long> sortedCols = new ArrayList<Long>(compareCols);
+        Collections.sort(sortedCols);
+        
+        if (sortedCols.size() == 0) {
+            throw new Exception("Nothing in the intersection of columns.");
+        }
+        
+        // verify that values match.
+        for (Long colName : sortedCols) {
+            if (!bytesSame(source.getColumnByName(colName).getByteArrayValue(), dest.getColumnByName(colName).getByteArrayValue())) {
                 // bail here.
-                throw new Exception("source and destination column values did not match for column " + srcColName);
-            }
-            
-            // if there were missing columns, blow up and indicate which ones now.
-            if (missingCols.length() > 0) {
-                throw new Exception(String.format("Destination is missing these columns: %s", missingCols));
+                throw new Exception("source and destination column values did not match for column " + colName);
             }
         }
+        
+        return sortedCols.size();
     }
     
     private static boolean bytesSame(byte[] bx, byte[] by) {
@@ -417,7 +432,7 @@ public class Migration2 {
         // read row.
         ColumnList<Long> columnList = src
                 .prepareQuery(srcCf)
-                .setConsistencyLevel(ConsistencyLevel.CL_ONE) // what about quorum?
+                .setConsistencyLevel(ConsistencyLevel.CL_QUORUM)
                 .getKey(locator)
                 .withColumnRange(range)
                 .execute().getResult();
