@@ -12,6 +12,7 @@ import com.netflix.astyanax.connectionpool.Host;
 import com.netflix.astyanax.connectionpool.NodeDiscoveryType;
 import com.netflix.astyanax.connectionpool.exceptions.ConnectionException;
 import com.netflix.astyanax.connectionpool.exceptions.OperationTimeoutException;
+import com.netflix.astyanax.connectionpool.exceptions.TimeoutException;
 import com.netflix.astyanax.connectionpool.impl.ConnectionPoolConfigurationImpl;
 import com.netflix.astyanax.connectionpool.impl.ConnectionPoolType;
 import com.netflix.astyanax.connectionpool.impl.CountingConnectionPoolMonitor;
@@ -241,7 +242,19 @@ public class Migration2 {
                         // copy this locator.
                         try {
                             Locator locator = Locator.createLocatorFromDbKey(locatorString);
-                            int copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
+                            int copiedCols = 0;
+                            int copyTries = 3;
+                            while (copyTries > 0) {
+                                try {
+                                    copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
+                                    break;
+                                } catch (TimeoutException ex) {
+                                    out.println("Copy timed out. sleeping.");
+                                    try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
+                                } finally {
+                                    copyTries -= 1;    
+                                }
+                            } 
                             int rowId = 0;
                             if (copiedCols > 0) {
                                 rowId = rowCount.incrementAndGet();
@@ -270,6 +283,7 @@ public class Migration2 {
                                                 .getResult();
                                         dstData = dstKeyspace
                                                 .prepareQuery(dstCf)
+                                                .setConsistencyLevel(ConsistencyLevel.CL_QUORUM)
                                                 .getKey(locator)
                                                 .withColumnRange(range)
                                                 .execute()
