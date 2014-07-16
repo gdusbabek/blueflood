@@ -240,85 +240,30 @@ public class Migration2 {
                         }
 
                         // copy this locator.
-                        try {
-                            Locator locator = Locator.createLocatorFromDbKey(locatorString);
-                            int copiedCols = 0;
-                            int copyTries = 3;
-                            while (copyTries > 0) {
-                                try {
-                                    copiedCols = copy(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl);
-                                    break;
-                                } catch (TimeoutException ex) {
-                                    out.println("Copy timed out. sleeping.");
-                                    try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
-                                } finally {
-                                    copyTries -= 1;    
-                                }
-                            } 
-                            int rowId = 0;
-                            if (copiedCols > 0) {
-                                rowId = rowCount.incrementAndGet();
+                        Locator locator = Locator.createLocatorFromDbKey(locatorString);
+                        int copiedCols = 0;
+                        int copyTries = 3;
+                        while (copyTries > 0) {
+                            try {
+                                copiedCols = copyWithVerify(locator, srcKeyspace, dstKeyspace, srcCf, dstCf, range, ttl, random.nextDouble() < verifyPercent);
+                                break;
+                            } catch (TimeoutException ex) {
+                                out.println("Copy timed out. sleeping.");
+                                try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
+                            } catch (ConnectionException ex) {
+                                // verification failed. stop processing.
+                                breakSignal.set(true);
+                                break;
+                            } finally {
+                                copyTries -= 1;    
                             }
-                            if (verbose || copiedCols > 0) {
-                                out.println(String.format("%d moved %d cols for locator %s last seen %s (%s) %.2f rpm", rowId, copiedCols, locator.toString(), DATE_FORMAT.format(new Date(locatorStamp)), Thread.currentThread().getName(), rowsPerMinute));
-                            }
-                            
-                            if (copiedCols > 0 && random.nextFloat() < verifyPercent) {
-                                int tries = 3;
-                                Exception problem = null;
-                                ColumnList<Long> srcDump = null, dstDump = null;
-                                boolean possibleTrouble = false;
-                                ColumnList<Long> srcData = null;
-                                ColumnList<Long> dstData = null;
-                                while (tries > 0) {
-                                    try {
-                                        // take a little break. this gives data a chance to move around.
-                                        Thread.currentThread().sleep(1000);
-                                        srcData = srcKeyspace
-                                                .prepareQuery(srcCf)
-                                                .setConsistencyLevel(ConsistencyLevel.CL_QUORUM)
-                                                .getKey(locator)
-                                                .withColumnRange(range)
-                                                .execute()
-                                                .getResult();
-                                        dstData = dstKeyspace
-                                                .prepareQuery(dstCf)
-                                                .setConsistencyLevel(ConsistencyLevel.CL_QUORUM)
-                                                .getKey(locator)
-                                                .withColumnRange(range)
-                                                .execute()
-                                                .getResult();
-                                    
-                                        int matches = checkSameResults(srcData, dstData);
-                                        out.println(String.format("Verified%scopy for %s src:%d,dst:%d,ver:%d", possibleTrouble ? " (barely) " : " ", locator.toString(), srcData.size(), dstData.size(), matches));
-                                        problem = null;
-                                        break;
-                                    } catch (OperationTimeoutException ex) {
-                                        out.println("Verification timed out. sleeping");
-                                        try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
-                                        // do not decrement tries.
-                                        continue;
-                                    } catch (Exception any) {
-                                        problem = any;
-                                        srcDump = srcData;
-                                        dstDump = dstData;
-                                        out.println(String.format("Verification trouble for %s. %s", locator.toString(), any.getMessage()));
-                                        possibleTrouble = true;
-                                    }
-                                    tries--;
-                                }
-                                
-                                if (problem != null) {
-                                    out.println(String.format("VERIFICATION FAILED for %s.", locator.toString()));
-                                    dumpCompare(srcDump, dstDump);
-                                    breakSignal.set(true);
-                                }
-                            }
+                        } 
+                        int rowId = 0;
+                        if (copiedCols > 0) {
+                            rowId = rowCount.incrementAndGet();
                         }
-                        catch (ConnectionException ex) {
-                            // something bad happened. stop processing, figure it out and start over.
-                            ex.printStackTrace(out);
-                            breakSignal.set(true);
+                        if (verbose || copiedCols > 0) {
+                            out.println(String.format("%d moved %d cols for locator %s last seen %s (%s) %.2f rpm", rowId, copiedCols, locator.toString(), DATE_FORMAT.format(new Date(locatorStamp)), Thread.currentThread().getName(), rowsPerMinute));
                         }
 
                         if (rowCount.get() >= maxRows) {
@@ -441,8 +386,54 @@ public class Migration2 {
         return sb.toString();
     }
     
+    private static boolean verifyWrite(Locator locator, ColumnList<Long> srcData, Keyspace dstKeyspace, CassandraModel.MetricColumnFamily dstCf, ByteBufferRange range) throws ConnectionException {
+        int tries = 3;
+        Exception problem = null;
+        ColumnList<Long> srcDump = null, dstDump = null;
+        boolean possibleTrouble = false;
+        ColumnList<Long> dstData = null;
+        while (tries > 0) {
+            try {
+                // take a little break. this gives data a chance to move around.
+                Thread.currentThread().sleep(1000);
+                
+                dstData = dstKeyspace
+                        .prepareQuery(dstCf)
+                        .setConsistencyLevel(ConsistencyLevel.CL_QUORUM)
+                        .getKey(locator)
+                        .withColumnRange(range)
+                        .execute()
+                        .getResult();
+            
+                int matches = checkSameResults(srcData, dstData);
+                out.println(String.format("Verified%scopy for %s src:%d,dst:%d,ver:%d", possibleTrouble ? " (barely) " : " ", locator.toString(), srcData.size(), dstData.size(), matches));
+                problem = null;
+                break;
+            } catch (OperationTimeoutException ex) {
+                out.println("Verification timed out. sleeping");
+                try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
+                // do not decrement tries.
+                continue;
+            } catch (Exception any) {
+                problem = any;
+                srcDump = srcData;
+                dstDump = dstData;
+                out.println(String.format("Verification trouble for %s. %s", locator.toString(), any.getMessage()));
+                possibleTrouble = true;
+            }
+            tries--;
+        }
+        
+        if (problem != null) {
+            dumpCompare(srcDump, dstDump);
+            return false;
+        }
+        
+        return true;
+    }
+    
     // keep this method threadsafe!
-    private static int copy(Locator locator, Keyspace src, Keyspace dst, CassandraModel.MetricColumnFamily srcCf, CassandraModel.MetricColumnFamily dstCf, ByteBufferRange range, final String ttl) throws ConnectionException {
+    private static int copyWithVerify(Locator locator, Keyspace src, Keyspace dst, CassandraModel.MetricColumnFamily srcCf, CassandraModel.MetricColumnFamily dstCf, ByteBufferRange range, final String ttl, boolean verify) throws ConnectionException {
         // read row.
         ColumnList<Long> columnList = src
                 .prepareQuery(srcCf)
@@ -462,6 +453,7 @@ public class Migration2 {
         // write row.
         MutationBatch batch = dst.prepareMutationBatch();
         ColumnListMutation<Long> mutation = batch.withRow(dstCf, locator);
+        int colCount = 0;
         for (Column<Long> c : columnList) {
             if (ttl != NONE) {
                 // ttl will either be the safety value or the difference between the safety value and the age of the column.
@@ -470,9 +462,17 @@ public class Migration2 {
             } else {
                 mutation.putColumn(c.getName(), c.getByteBufferValue());
             }
+            colCount += 1;
         }
         batch.execute().getResult();
-        return columnList.size();
+        
+        
+        if (colCount > 0 && verify) {
+            if (!verifyWrite(locator, columnList, dst, dstCf, range)) {
+                throw new ConnectionException("VERIFICATION FAILED for " + locator.toString()) {};
+            }
+        }
+        return colCount;
     }
     
     // assume we have duplicate listings in the locator file. Some of them are more recent and therefore, more 
