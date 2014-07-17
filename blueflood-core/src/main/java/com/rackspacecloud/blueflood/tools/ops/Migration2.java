@@ -177,7 +177,9 @@ public class Migration2 {
             
             final int maxRowsPerMinute = (Integer)options.get(RATE_PER_MINUTE);
             final int maxRows = (Integer)options.get(MAX_ROWS);
-            final AtomicInteger rowCount = new AtomicInteger(0);
+            final AtomicInteger movedRowCount = new AtomicInteger(0);
+            final AtomicInteger emptyRowCount = new AtomicInteger(0);
+            final AtomicInteger absoluteRowCount = new AtomicInteger(0);
             final int concurrency = (Integer)options.get(CONCURRENCY);
             final double verifyPercent = (Double)options.get(VERIFY); 
             
@@ -194,6 +196,7 @@ public class Migration2 {
             String resumeAt = options.get(RESUME).toString();
             boolean skipping = resumeAt != DO_NOT_RESUME;
             
+            final int numLocators = locators.size();
             final long startSeconds = System.currentTimeMillis() / 1000;
             
             for (StringLocator sl : locators) {
@@ -224,10 +227,10 @@ public class Migration2 {
 
                         // calculate current rows per minute.
                         double runningMinutes = (double) ((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
-                        double rowsPerMinute = (double) rowCount.get() / runningMinutes;
+                        double rowsPerMinute = (double) movedRowCount.get() / runningMinutes;
 
                         // wait until rate limiting is over.
-                        while (rowsPerMinute > maxRowsPerMinute && rowCount.get() > 0) {
+                        while (rowsPerMinute > maxRowsPerMinute && movedRowCount.get() > 0) {
                             //out.println(String.format("%.2f > %d", rowsPerMinute, maxRowsPerMinute));
                             try {
                                 Thread.currentThread().sleep(1000);
@@ -236,7 +239,7 @@ public class Migration2 {
                             }
 
                             runningMinutes = (double) ((System.currentTimeMillis() / 1000) - startSeconds) / 60d;
-                            rowsPerMinute = (double) rowCount.get() / runningMinutes;
+                            rowsPerMinute = (double) movedRowCount.get() / runningMinutes;
                         }
 
                         // copy this locator.
@@ -252,6 +255,7 @@ public class Migration2 {
                                 try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
                             } catch (ConnectionException ex) {
                                 // verification failed. stop processing.
+                                out.println("SIGNALING: Copy failure");
                                 breakSignal.set(true);
                                 break;
                             } finally {
@@ -259,15 +263,21 @@ public class Migration2 {
                             }
                         } 
                         int rowId = 0;
+                        int numEmptyRows = 0;
+                        int absoluteRowId = absoluteRowCount.incrementAndGet();
                         if (copiedCols > 0) {
-                            rowId = rowCount.incrementAndGet();
+                            rowId = movedRowCount.incrementAndGet();
+                            numEmptyRows = emptyRowCount.get();
+                        } else {
+                            numEmptyRows = emptyRowCount.incrementAndGet();
                         }
                         if (verbose || copiedCols > 0) {
-                            out.println(String.format("%d moved %d cols for locator %s last seen %s (%s) %.2f rpm", rowId, copiedCols, locator.toString(), DATE_FORMAT.format(new Date(locatorStamp)), Thread.currentThread().getName(), rowsPerMinute));
+                            out.println(String.format("%d/%d/%d moved %d cols for locator %s last seen %s %d empties %.2f rpm",
+                                    rowId, absoluteRowId, numLocators, copiedCols, locator.toString(), DATE_FORMAT.format(new Date(locatorStamp)), numEmptyRows, rowsPerMinute));
                         }
 
-                        if (rowCount.get() >= maxRows) {
-                            out.println("Reached max rows " + Thread.currentThread().getName());
+                        if (movedRowCount.get() >= maxRows) {
+                            out.println("SIGNALING: Reached max rows " + Thread.currentThread().getName());
                             breakSignal.set(true);
                         }
                     }
@@ -296,7 +306,8 @@ public class Migration2 {
             }
             
             out.println("done");
-            out.println(String.format("%d rows; %d candidates", rowCount.get(), locators.size()));
+            out.println(String.format("%d moved, %d empties, %d counted, total %d of %d",
+                    movedRowCount.get(), emptyRowCount.get(), absoluteRowCount.get(), movedRowCount.get() + emptyRowCount.get(), locators.size()));
             
         } catch (IOException ex) {
             ex.printStackTrace(out);
