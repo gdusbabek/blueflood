@@ -255,7 +255,8 @@ public class Migration2 {
                                 try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
                             } catch (ConnectionException ex) {
                                 // verification failed. stop processing.
-                                out.println("SIGNALING: Copy failure");
+                                out.println("SIGNALING: Copy failure " + locator.toString());
+                                ex.printStackTrace(out);
                                 breakSignal.set(true);
                                 break;
                             } finally {
