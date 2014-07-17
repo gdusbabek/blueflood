@@ -195,6 +195,7 @@ public class Migration2 {
             final AtomicBoolean breakSignal = new AtomicBoolean(false);
             String resumeAt = options.get(RESUME).toString();
             boolean skipping = resumeAt != DO_NOT_RESUME;
+            int skipCount = 0;
             
             final int numLocators = locators.size();
             final long startSeconds = System.currentTimeMillis() / 1000;
@@ -205,8 +206,9 @@ public class Migration2 {
                 if (skipping) {
                     if (sl.locator.equals(resumeAt)) {
                         skipping = false;
-                        out.println("Resuming at " + resumeAt);
+                        out.println(String.format("Resuming at %s after skipping %d", resumeAt, skipCount));
                     } else {
+                        skipCount += 1;
                         continue;
                     }
                 }
@@ -307,8 +309,8 @@ public class Migration2 {
             }
             
             out.println("done");
-            out.println(String.format("%d moved, %d empties, %d counted, total %d of %d",
-                    movedRowCount.get(), emptyRowCount.get(), absoluteRowCount.get(), movedRowCount.get() + emptyRowCount.get(), locators.size()));
+            out.println(String.format("%d moved, %d empties, %d counted, total %d of %d, with %d skipped",
+                    movedRowCount.get(), emptyRowCount.get(), absoluteRowCount.get(), movedRowCount.get() + emptyRowCount.get(), locators.size(), skipCount));
             
         } catch (IOException ex) {
             ex.printStackTrace(out);
