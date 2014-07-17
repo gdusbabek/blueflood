@@ -255,6 +255,9 @@ public class Migration2 {
                             } catch (TimeoutException ex) {
                                 out.println("Copy timed out. sleeping.");
                                 try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
+                            } catch (OperationTimeoutException ex) {
+                                out.println("Copy operation timed out. sleeping.");
+                                try { Thread.currentThread().sleep(5000); } catch (Exception ignore) {}
                             } catch (ConnectionException ex) {
                                 // verification failed. stop processing.
                                 out.println("SIGNALING: Copy failure " + locator.toString());
