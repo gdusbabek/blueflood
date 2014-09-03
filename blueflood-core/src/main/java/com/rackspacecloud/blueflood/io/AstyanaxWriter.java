@@ -100,7 +100,7 @@ public class AstyanaxWriter extends AstyanaxIO {
                 final boolean isBoolean = metric.isBoolean();
 
                 if (!shouldPersist(metric)) {
-                    log.debug("Metric shouldn't be persisted, skipping insert", metric.getLocator().toString());
+                    log.trace("Metric shouldn't be persisted, skipping insert", metric.getLocator().toString());
                     continue;
                 }
 
@@ -132,7 +132,7 @@ public class AstyanaxWriter extends AstyanaxIO {
 
     // numeric only!
     private final void insertLocator(Locator locator, MutationBatch mutationBatch) {
-        mutationBatch.withRow(CassandraModel.CF_METRICS_LOCATOR, (long) Util.computeShard(locator.toString()))
+        mutationBatch.withRow(CassandraModel.CF_METRICS_LOCATOR, (long) Util.getShard(locator.toString()))
                 .putEmptyColumn(locator, LOCATOR_TTL);
     }
 
@@ -299,7 +299,7 @@ public class AstyanaxWriter extends AstyanaxIO {
         }
     }
 
-    protected static boolean isLocatorCurrent(Locator loc) {
+    public static boolean isLocatorCurrent(Locator loc) {
         return insertedLocators.getIfPresent(loc.toString()) != null;
     }
 
