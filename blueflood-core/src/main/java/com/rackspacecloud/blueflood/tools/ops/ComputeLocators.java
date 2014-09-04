@@ -234,7 +234,7 @@ public class ComputeLocators {
         }
     }
     
-    private static final BigInteger MAX_TOKEN = new BigInteger("42535295865117307932921825928971026431");
+    private static final BigInteger MAX_TOKEN = new BigInteger("170141183460469231731687303715884105728");
     private static Iterable<Pair<String, String>> splitTokens(int count) {
         List<Pair<String, String>> list = new ArrayList<Pair<String, String>>();
         
