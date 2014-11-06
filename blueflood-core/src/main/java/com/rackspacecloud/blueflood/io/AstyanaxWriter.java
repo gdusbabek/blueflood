@@ -92,6 +92,7 @@ public class AstyanaxWriter extends AstyanaxIO {
         Timer.Context ctx = Instrumentation.getWriteTimerContext(CassandraModel.CF_METRICS_FULL);
 
         try {
+            
             MutationBatch mutationBatch = keyspace.prepareMutationBatch();
             for (Metric metric: metrics) {
                 final Locator locator = metric.getLocator();
@@ -99,10 +100,15 @@ public class AstyanaxWriter extends AstyanaxIO {
                 final boolean isString = metric.isString();
                 final boolean isBoolean = metric.isBoolean();
 
-                if (!shouldPersist(metric)) {
-                    log.trace("Metric shouldn't be persisted, skipping insert", metric.getLocator().toString());
+                if (isString || isBoolean) {
+                    log.trace("Dropping string metric");
                     continue;
                 }
+                
+//                if (!shouldPersist(metric)) {
+//                    log.trace("Metric shouldn't be persisted, skipping insert", metric.getLocator().toString());
+//                    continue;
+//                }
 
                 // key = shard
                 // col = locator (acct + entity + check + dimension.metric)
@@ -236,7 +242,8 @@ public class AstyanaxWriter extends AstyanaxIO {
                         
                         if (!isString && !isBoolean)
                             locatorInsertOk = true;
-                        shouldPersist = shouldPersist((Metric)metric);
+                        if (isString || isBoolean)
+                            shouldPersist = false;
                     } else {
                         locatorInsertOk = true;
                     }
